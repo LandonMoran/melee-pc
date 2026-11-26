@@ -1134,6 +1134,9 @@ public:
                 auto info = inspection.get();
                 if (info.supported) {
                     prefs.disc = pending_path;
+                    /* Android: the picker's grant lasts for this session, and
+                     * the path outlives it in launcher.cfg. */
+                    pc_android_take_persistable_uri(prefs.disc.c_str());
                     supported = true;
                     selected_identity = identity(prefs.disc);
                     std::string display_name;

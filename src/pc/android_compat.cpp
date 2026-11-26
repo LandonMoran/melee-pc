@@ -282,6 +282,34 @@ void pc_android_export_logs(void) {
     env->PopLocalFrame(nullptr);
 }
 
+/* MeleeActivity.takePersistableUri (Ljava/lang/String;)V, for a disc the
+ * launcher keeps as a content:// URI: the picker grants read access for the
+ * session only, and the launcher stores the URI in launcher.cfg, so the next
+ * launch would find it unreadable without this. A provider that offers no
+ * persistable grant throws, which is cleared and costs only that. */
+void pc_android_take_persistable_uri(const char* uri) {
+    if (uri == nullptr || uri[0] == '\0') {
+        return;
+    }
+    JNIEnv* env = (JNIEnv*)SDL_GetAndroidJNIEnv();
+    if (env == nullptr || env->PushLocalFrame(8) != JNI_OK) {
+        return;
+    }
+    jobject activity = (jobject)SDL_GetAndroidActivity();
+    jclass cls = activity != nullptr ? env->GetObjectClass(activity) : nullptr;
+    jmethodID method = cls != nullptr ?
+                           env->GetMethodID(cls, "takePersistableUri", "(Ljava/lang/String;)V") :
+                           nullptr;
+    if (method != nullptr) {
+        jstring text = env->NewStringUTF(uri);
+        if (text != nullptr) {
+            env->CallVoidMethod(activity, method, text);
+            threw(env, "takePersistableUri");
+        }
+    }
+    env->PopLocalFrame(nullptr);
+}
+
 /* MeleeActivity.getA11ySoundsDir ()Ljava/lang/String; unpacks the cues' sound
  * files from the APK into the app's own files directory on first ask, since
  * assets inside the APK are not a folder the cue engine could read. */
@@ -360,6 +388,10 @@ const char* pc_android_device_name(void) {
 
 const char* pc_android_a11y_sounds_dir(void) {
     return nullptr;
+}
+
+void pc_android_take_persistable_uri(const char* uri) {
+    (void)uri;
 }
 
 #endif

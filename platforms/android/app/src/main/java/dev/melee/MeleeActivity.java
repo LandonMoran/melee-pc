@@ -113,6 +113,20 @@ public class MeleeActivity extends SDLActivity {
         return mSpeech;
     }
 
+    /* Called from native (src/pc/android_compat.cpp) with a disc image the
+     * launcher saved as a content:// URI: the picker grants read access for
+     * this session, so it has to be persisted for the next launch to open
+     * the same disc. Providers that offer no persistable grant throw; the
+     * image still opens now, and Choose Disc fixes it next time. */
+    public void takePersistableUri(String uri) {
+        try {
+            getContentResolver().takePersistableUriPermission(
+                android.net.Uri.parse(uri),
+                android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        } catch (Exception ignored) {
+        }
+    }
+
     /* The accessibility cues' sound files, unpacked from the APK on first
      * ask (src/pc/a11y/cue_output.cpp reads them from a folder). Null when
      * the assets cannot be read, which leaves the cues silent. */

@@ -41,6 +41,13 @@ const char* pc_android_device_name(void);
 void pc_android_set_launcher_active(bool active);
 /* Open Android's document picker to save recent app logs without adb. */
 void pc_android_export_logs(void);
+/* Keep read access to a disc image the picker handed over as a content://
+ * URI (MeleeActivity.takePersistableUri). A picker's grant lasts for the
+ * session; the launcher remembers the URI across launches, so without this
+ * the next start could not open the disc the player chose. A no-op on every
+ * other platform, and on a URI no provider will persist. */
+void pc_android_take_persistable_uri(const char* uri);
+
 /* The folder the accessibility cues' sound files were unpacked into from the
  * APK (MeleeActivity.getA11ySoundsDir), with its trailing separator, or NULL
  * when they could not be unpacked. gethostpath-style: owned by the callee and
