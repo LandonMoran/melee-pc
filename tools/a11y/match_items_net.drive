@@ -1,0 +1,121 @@
+# Items online, for tools/a11y/drive_net.py --muted: two instances in one
+# session over loopback. Player 1 (instance a, Pichu) sets items to Very
+# high on Item Switch from the rules header and picks Final Destination;
+# player 2 chooses by stick. Each item that comes in is said on both, by
+# name, queued; Pichu then dashes along the stage pressing A after each
+# dash until A takes an item: said in your voice on a and in the opponents'
+# voice on b, the name alone, as an online match is one against one. The
+# items and the stage settle which item and when, so neither is pinned.
+# drive_net.py checks the session stayed in sync over the item switch's
+# random drops. About 45 seconds.
+#   python tools/a11y/drive_net.py --muted tools/a11y/match_items_net.drive
+# --muted keeps Accessibility on in both, so the cues and voices run as for
+# a player and the voices log their "plays" lines. With --base-b DIR, player
+# 2 is a base port build, which says nothing: a alone says the items, and
+# b's b-base steps wait on scene changes.
+
+# Title screen to the main menu (tools/a11y/main_menu.drive), once the
+# session is up: both instances walk the menus a's presses move.
+a wait "net: rollback with"
+b wait "net: rollback with"
+a wait "state 0 scene 0$"
+a press Start until "boot scene: game mode"
+a press A until "boot scene: state 0 scene 1$" 20 0.3
+a wait '"Main Menu\. 1-P Mode\. '
+sleep 1
+
+# VS. Mode, Melee.
+a press Down
+a wait '"VS\. Mode\. '
+a press A
+a wait '"VS\. Mode\. Melee\. '
+sleep 0.3
+a press A
+a wait '"Character select\. Player 1, no character\."'
+b-fork wait '"Character select\. Player 2, no character\."'
+b-base wait 'boot scene: state \d+ scene 8$'
+sleep 1
+
+# Pichu for player 1, which leaves the hand free.
+a press DUp
+a wait ': "Player 1: closed"$'
+a press DUp
+a wait ': "Holding your coin\. Pichu"$'
+a wait 'glide to "Pichu" ended after \d+ frames: arrived'
+a press A
+sleep 1
+
+# Up to the rules header, Custom Rules, and Item Switch, whose frequency
+# strip is Up from its first row: Left twice, Medium to Very high. Both
+# instances run the same menus, so the rules are the session's.
+a search ': "Rules: 2-minute KO fest!"$' DUp*6 DRight*4
+a wait 'glide to "Rules: 2-minute KO fest!" ended after \d+ frames: arrived'
+a press A
+a wait ': "Custom Rules\. Rules: Time\. '
+sleep 1
+a press Down until ': "Item Switch\. ' 8 0.5
+a press A
+a wait ': "Item Switch\. Food: on\. '
+sleep 1
+a press Up
+a wait ': "Item frequency: Medium\. Left and right to adjust\."$'
+a press Left
+a wait ': "High"$'
+a press Left
+a wait ': "Very high"$'
+a press B
+a wait ': "Custom Rules\. Item Switch\. '
+sleep 0.5
+a press B
+a wait '"Character select\. '
+sleep 1
+
+# Player 2 pushes the stick up into the portraits and chooses there.
+b press Up 450
+b-fork wait '"Holding your coin'
+b-base sleep 0.5
+sleep 1
+b press A
+b-fork wait 'Ready to fight\. Press Start\.'
+b-base sleep 1
+sleep 1
+
+# Stage select: player 1 picks Final Destination, player 2 Icicle Mountain
+# (a base port player 2 Random), and the default seed's coin flip takes
+# player 1's.
+a press Start
+a wait '"Stage select\. '
+b-fork wait '"Stage select\. '
+b-base wait 'boot scene: state \d+ scene 9$'
+sleep 1
+a press DDown
+a wait ': "Icicle Mountain\. '
+a wait 'glide to "Icicle Mountain" ended after \d+ frames: arrived'
+a search ': "Final Destination\. ' DDown*4 DRight*3
+a wait 'glide to "Final Destination" ended after \d+ frames: arrived'
+a press A
+a wait "sss: we picked"
+b-fork press DDown
+b-fork wait ': "Icicle Mountain\. '
+b-fork wait 'glide to "Icicle Mountain" ended after \d+ frames: arrived'
+b-fork press A
+b-fork wait "sss: we picked"
+b-base press Start
+b-base wait "sss: we picked 30$"
+a wait 'boot scene: state \d+ scene 2$'
+b wait 'boot scene: state \d+ scene 2$'
+
+# The item switch's first item, played where it comes in and said on both
+# by name, queued (the item's position cue starts on the play's tick, or
+# for a heavy item once it lands, so it is left to the reach lines below).
+a wait 'cue item appearance \d play ' 30
+a wait 'speak queue[^:]*: "[A-Z][^"]*"$' 5
+b-fork wait 'speak queue[^:]*: "[A-Z][^"]*"$' 5
+sleep 3
+
+# Pichu dashes along the stage, a short dash at a time, pressing A after
+# each: A takes an item once one lies within reach (a jab otherwise), said
+# in your voice on a and in the opponents' voice on b.
+a search 'voice yours: "[A-Z][^"]*"$' A Right A Right A Right A Right A Right A Left A Left A Left A Left A Left A Left A Left A Right A Right A Right A Right A Right A Right A Right A Left A Left A Left A Left A Left A Left A Left A
+b-fork wait 'voice opponents: "[A-Z][^"]*"$' 5
+sleep 2

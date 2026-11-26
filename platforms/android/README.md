@@ -50,6 +50,24 @@ Use NDK **26.3.11579264**, matching CI; select it with `ANDROID_NDK_HOME`.
    adb install -r dist/Melee-Android-arm64.apk
    ```
 
+## Accessibility
+
+The build carries the Non-Visual Melee accessibility layer (src/pc/a11y), which
+makes the game playable without sight: the launcher, the game's menus and the
+results are read aloud, two voices announce damage, stocks and pickups, and
+audio cues say where you and your opponent are.
+
+Speech is the phone's own `TextToSpeech` engine, reached over JNI
+(`android_tts.cpp` and `MeleeSpeech.java`); Prism, the screen reader library the
+Windows and macOS builds link, ships no Android build. The two match voices are
+the same engine rendered to memory and played by the game's cue engine. The
+cue sounds are unpacked from the APK into the app's files directory on first
+launch (`MeleeActivity.getA11ySoundsDir`).
+
+A gamepad is required to play with speech: the on-screen overlay is drawn for
+sighted players. [ACCESSIBILITY.md](../../ACCESSIBILITY.md#android) has the
+player-facing guide.
+
 ## Performance settings
 
 Use **Settings > Graphics > Performance preset > Apply** for 1x rendering,

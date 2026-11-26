@@ -25,6 +25,7 @@
 #include "pc/pc.h"
 #include "pc/android_hooks.h"
 #include "pc/launcher.h"
+#include "a11y/a11y_hooks.h"
 
 int melee_main(void);
 
@@ -311,6 +312,7 @@ static void pc_shutdown_once(void) {
         return;
     }
     done = true;
+    pc_a11y_shutdown();
     pc_net_match_stop();
     pc_net_disconnect();
     pc_lan_stop();
@@ -582,6 +584,7 @@ MELEE_EXPORT int main(int argc, char* argv[]) {
      * hidapi hint so SDL's rescaling driver leaves it for our raw path. */
     pc_gcadapter_init();
     pc_launcher_configure(&config);
+    pc_a11y_init();
 
     const AuroraInfo info = aurora_initialize(argc, argv, &config);
 

@@ -3492,6 +3492,7 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
 
 update_display:
     updateCursorDisplay(jobj, cursor, &state_jobj, &color_jobj);
+    pc_a11y_css_hand(cursor->x4, cursor->x5, cursor->x6, cursor->xC, cursor->x10);
 }
 static inline int getDoorCount(CSSData* css)
 {
@@ -3750,6 +3751,7 @@ void fn_80262648(HSD_GObj* gobj)
     HSD_JObjSetTranslateY(jobj, model->x14);
     HSD_JObjSetTranslateZ(jobj, 1.0f);
     HSD_JObjAnimAll(jobj);
+    pc_a11y_css_coin(model->x4, model->x8, model->xC);
 }
 
 void fn_80262F44(HSD_GObj* gobj)
@@ -5484,6 +5486,7 @@ void mnCharSel_Scene_OnFrame(void)
 
     PAD_STACK(8);
 
+    pc_a11y_css_frame(mnCharSel_804D6CB0, &mnCharSel_803F0DFC, icons, mnCharSel_803F0E8C, &mnCharSel_803F0EBC, &data2, mnCharSel_804D6CC0, mnCharSel_804D6CF5, mnCharSel_804D6CF6, mnCharSel_804D6CF7);
     mnCharSel_804D6CEC += 1;
     if (mnCharSel_804D6CF6 <= 1) {
         cache = &lbDvd_GetPreloadCacheScene()->game_cache;

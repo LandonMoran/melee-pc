@@ -1,0 +1,83 @@
+[
+  {
+    "url": "https://api.github.com/repos/ohylli/non-visual-melee/releases/1",
+    "html_url": "https://github.com/ohylli/non-visual-melee/releases/tag/ci-latest",
+    "tag_name": "ci-latest",
+    "target_commitish": "master",
+    "name": "ci-latest",
+    "draft": false,
+    "prerelease": true,
+    "published_at": "2026-11-23T12:00:00Z",
+    "assets": [
+      {
+        "name": "NonVisualMelee-Windows-x86_64.zip",
+        "content_type": "application/zip",
+        "size": 98765432,
+        "browser_download_url": "https://github.com/ohylli/non-visual-melee/releases/download/ci-latest/NonVisualMelee-Windows-x86_64.zip"
+      },
+      {
+        "name": "NonVisualMelee-macOS-arm64.zip",
+        "content_type": "application/zip",
+        "size": 98765432,
+        "browser_download_url": "https://github.com/ohylli/non-visual-melee/releases/download/ci-latest/NonVisualMelee-macOS-arm64.zip"
+      },
+      {
+        "name": "NonVisualMelee-macOS-x86_64.zip",
+        "content_type": "application/zip",
+        "size": 98765432,
+        "browser_download_url": "https://github.com/ohylli/non-visual-melee/releases/download/ci-latest/NonVisualMelee-macOS-x86_64.zip"
+      }
+    ],
+    "body": "Canned for tools/a11y/drive.py --update-list."
+  },
+  {
+    "url": "https://api.github.com/repos/ohylli/non-visual-melee/releases/1",
+    "html_url": "https://github.com/ohylli/non-visual-melee/releases/tag/v0.4.3",
+    "tag_name": "v0.4.3",
+    "target_commitish": "master",
+    "name": "Melee-PC v0.4.3",
+    "draft": false,
+    "prerelease": false,
+    "published_at": "2026-11-23T12:00:00Z",
+    "assets": [
+      {
+        "name": "Melee-Windows-x86_64.zip",
+        "content_type": "application/zip",
+        "size": 98765432,
+        "browser_download_url": "https://github.com/ohylli/non-visual-melee/releases/download/v0.4.3/Melee-Windows-x86_64.zip"
+      },
+      {
+        "name": "Melee-macOS-arm64.zip",
+        "content_type": "application/zip",
+        "size": 98765432,
+        "browser_download_url": "https://github.com/ohylli/non-visual-melee/releases/download/v0.4.3/Melee-macOS-arm64.zip"
+      }
+    ],
+    "body": "Canned for tools/a11y/drive.py --update-list."
+  },
+  {
+    "url": "https://api.github.com/repos/ohylli/non-visual-melee/releases/1",
+    "html_url": "https://github.com/ohylli/non-visual-melee/releases/tag/v0.4.2",
+    "tag_name": "v0.4.2",
+    "target_commitish": "master",
+    "name": "Melee-PC v0.4.2",
+    "draft": false,
+    "prerelease": false,
+    "published_at": "2026-11-23T12:00:00Z",
+    "assets": [
+      {
+        "name": "Melee-Windows-x86_64.zip",
+        "content_type": "application/zip",
+        "size": 98765432,
+        "browser_download_url": "https://github.com/ohylli/non-visual-melee/releases/download/v0.4.2/Melee-Windows-x86_64.zip"
+      },
+      {
+        "name": "Melee-macOS-arm64.zip",
+        "content_type": "application/zip",
+        "size": 98765432,
+        "browser_download_url": "https://github.com/ohylli/non-visual-melee/releases/download/v0.4.2/Melee-macOS-arm64.zip"
+      }
+    ],
+    "body": "Canned for tools/a11y/drive.py --update-list."
+  }
+]

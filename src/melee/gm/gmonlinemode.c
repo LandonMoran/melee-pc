@@ -31,6 +31,7 @@
 extern const char* pc_get_net_target(void);
 extern void pc_set_net_target(const char* code);
 #include "pc/pc.h"
+#include "pc/a11y/a11y_hooks.h"
 #endif
 
 /* GM_ONLINE: lobby -> CSS -> SSS -> VS -> (sudden death) -> results -> CSS,
@@ -826,8 +827,11 @@ void gm_Scene_OnlineLobby_OnFrame(void)
             view.phase = LOBBY_PHASE_FOUND;
             snprintf(view.message, sizeof view.message, "%s", profile_message);
         } else if (direct_screen != DIRECT_OFF && directEntryFrame(&view, input)) {
-            /* the hub or the keyboard drew the screen and took the input */
-            input &= ~(u64) (HSD_PAD_B | PAD_CANCEL);
+            /* the hub or the keyboard drew the screen and took the input;
+             * B on the hub is left to go back, as its hint says */
+            if (view.screen != LOBBY_SCREEN_MENU) {
+                input &= ~(u64) (HSD_PAD_B | PAD_CANCEL);
+            }
         } else if (awaiting_rank_result && pc_net_match_publication(NULL) == 0) {
             pc_net_poll();
             pc_rank_session_poll();
@@ -937,6 +941,7 @@ void gm_Scene_OnlineLobby_OnFrame(void)
             }
         }
         mnOnlineLobby_Update(&view);
+        pc_a11y_lobby_frame(&view);
         if (input & (HSD_PAD_B | PAD_CANCEL)) {
             sfxBack();
             pc_net_peer_status_clear();
@@ -951,6 +956,7 @@ void gm_Scene_OnlineLobby_OnFrame(void)
     n = pc_lan_peers(peers, PC_LAN_MAX_PEERS);
     lobbyFillView(&view, state, why, peers, n);
     mnOnlineLobby_Update(&view);
+    pc_a11y_lobby_frame(&view);
 
     if (state == 2) {
         /* Both peers tick in lockstep once connected, so leaving on the

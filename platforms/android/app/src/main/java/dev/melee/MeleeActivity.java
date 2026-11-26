@@ -100,6 +100,58 @@ public class MeleeActivity extends SDLActivity {
 
     private TouchOverlayView mTouchOverlay;
     private boolean mFullscreen = true;
+    private MeleeSpeech mSpeech;
+    private String mA11ySoundsDir;
+
+    /* Called from native (src/pc/a11y/android_tts.cpp) on the game thread or
+     * the voices' worker: MeleeSpeech posts its own engine calls to the main
+     * thread, so neither needs this one. */
+    public MeleeSpeech getSpeech() {
+        if (mSpeech == null) {
+            mSpeech = MeleeSpeech.get(this);
+        }
+        return mSpeech;
+    }
+
+    /* The accessibility cues' sound files, unpacked from the APK on first
+     * ask (src/pc/a11y/cue_output.cpp reads them from a folder). Null when
+     * the assets cannot be read, which leaves the cues silent. */
+    public String getA11ySoundsDir() {
+        if (mA11ySoundsDir == null) {
+            mA11ySoundsDir = unpackA11ySounds();
+        }
+        return mA11ySoundsDir;
+    }
+
+    private String unpackA11ySounds() {
+        java.io.File directory = new java.io.File(getFilesDir(), "a11y");
+        if (!directory.isDirectory() && !directory.mkdirs()) {
+            return null;
+        }
+        try {
+            String[] names = getAssets().list("a11y");
+            if (names == null) {
+                return null;
+            }
+            for (String name : names) {
+                java.io.File target = new java.io.File(directory, name);
+                if (target.isFile() && target.length() > 0) {
+                    continue; /* already unpacked by an earlier run */
+                }
+                try (java.io.InputStream in = getAssets().open("a11y/" + name);
+                        java.io.OutputStream out = new java.io.FileOutputStream(target)) {
+                    byte[] buffer = new byte[8192];
+                    int count;
+                    while ((count = in.read(buffer)) > 0) {
+                        out.write(buffer, 0, count);
+                    }
+                }
+            }
+        } catch (java.io.IOException e) {
+            return null;
+        }
+        return directory.getAbsolutePath() + "/";
+    }
 
     public void setFullscreen(final boolean fullscreen) {
         runOnUiThread(() -> {

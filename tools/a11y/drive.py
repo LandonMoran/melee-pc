@@ -1,0 +1,1037 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
+r"""Drive a game run with scripted controller input and print what it logged.
+
+Windows only. Launches build/melee.exe, silent and without taking focus
+unless --sound or --focus says otherwise, feeds it input through the base
+port's MELEE_KEY_FIFO test driver (src/pc/keyboard.c) over a named pipe, and
+prints the [a11y] and "boot scene" lines interleaved with the script's steps.
+The whole output (stdout and stderr) is saved to --out.
+
+  python tools/a11y/drive.py [options] SCRIPT_FILE
+  python tools/a11y/drive.py [options] -c "press Start; wait 'scene 1'"
+
+Script steps, one per line (or ';'-separated with -c), '#' starts a comment:
+
+  press BUTTON[+BUTTON...] [MS]  hold the buttons MS milliseconds (default 120)
+                                 and wait until the game's pad shows them
+  press ... until RE [TIMES [SECONDS]]
+                                 press again every SECONDS (default 1.5)
+                                 until an output line matches RE, at most
+                                 TIMES (default 20)
+  search RE BUTTON[*N] ...       press the buttons one at a time, BUTTON*N
+                                 being N presses, until an output line
+                                 matches RE; each press waits up to 1.5 s for
+                                 a line of speech
+  wait RE [SECONDS]              wait for an output line matching RE,
+                                 newer than the last press or wait (default 30)
+  key KEY [KEY...]               press and release each key in turn as an SDL
+                                 key event, waiting until the game takes it
+  type TEXT                      type TEXT, one SDL text event a character
+  gamepad BUTTON [BUTTON...]     press and release each gamepad button in turn
+                                 as an SDL gamepad event, likewise
+  ini RE [SECONDS]               wait until a line of the run's accessibility
+                                 settings file (a11y.ini, below) matches RE
+                                 (default 5)
+  sleep SECONDS
+  shot PATH                      save the game window as a PNG
+  quit                           close the window and wait for a clean exit
+
+RE is a Python regular expression searched in each line: escape brackets
+(\[a11y\]) and anchor with $ where a number could run on ("scene 1$").
+A named group a line matched keeps its text for the steps after it, where
+%NAME% in an RE stands for that text, escaped: after
+  wait '"Player 2: CPU, (?P<cpu>[^"]+)"'
+the step search '"%cpu%, player 2.s coin"' ... looks for that character.
+
+Buttons are GameCube names, as in tools/devctl.py: A B X Y Z L R Start,
+Up Down Left Right (main stick), CUp CDown CLeft CRight, DUp DDown DLeft
+DRight. They drive controller port 1, merged with any real controller there.
+Steering is on (MELEE_A11Y_STEER=1), so on character select the D-pad moves
+the hand from target to target. MELEE_A11Y_STEER in the environment replaces
+it: empty leaves Steering to the run's a11y.ini, 0 turns it off.
+
+key, type and gamepad reach what reacts to SDL events instead: the port
+menu (F1, or Back on a gamepad) and the launcher, which press never reaches.
+They go through the fork's event pipe (MELEE_A11Y_EVENT_FIFO,
+src/pc/a11y/event_pipe.cpp), which pushes real SDL events into the game
+without giving it focus. Each step waits for the game's "[a11y] event N:
+... taken" line, which comes once the game's loop has taken the event, so
+it works while the port menu holds the game still. A KEY is an SDL key name
+(F1 Escape Return Tab Backspace Up Down Left Right Space A), with modifiers
+in front: Shift+Tab, Ctrl+A. A BUTTON is SDL's name: a (the bottom face
+button) b (the right one) x y back guide start leftshoulder rightshoulder
+dpup dpdown dpleft dpright. Pushed keys reach the game's own pad only with
+the window focused (--focus), as real keys do. A base port build has no
+event pipe, so these steps fail on it.
+
+--launcher starts the game on the launcher instead of the disc: the run's
+settings folder gets a launcher.cfg that names the disc (--disc) and turns
+the update check off (--update-list, below, leaves it on), so the launcher
+opens on Home with the disc remembered and says the same whatever the
+network and the latest release.
+Its Play starts the game as a player's would.
+
+--update-list FILE leaves the update check on and has the game read the
+release list from FILE (MELEE_A11Y_UPDATE_LIST, relative to the repo root)
+in place of GitHub's, so a run hears an update, or none, from a canned
+list in tools/a11y/update_lists/ and never asks the network. With
+--launcher the launcher checks at start; the port menu's Check now reads
+the same file.
+
+A key or gamepad step that would press the focused control (Return, Space,
+a, start) is refused while the last focus announcement names a control that
+leaves the game's window, and in launcher mode also before any has said
+where focus is: Choose Disc opens the Windows file dialog, which takes
+focus and cuts off the maintainer's screen reader; the Discord buttons and
+the update banner open the browser; Display mode goes fullscreen. Left and
+Right (dpleft, dpright) on Display mode are refused too, since stepping its
+value goes fullscreen as well.
+
+Speech is off by default (MELEE_A11Y=0, Accessibility off for the run):
+every announcement is still logged, marked (off), but features that take
+keys for speech leave them alone, as the launcher's line reading does, and
+the cues are muted unless MELEE_A11Y_CUES=1. --muted keeps accessibility on
+as for a player and only keeps speech from the screen reader
+(MELEE_A11Y_SCREEN_READER=0, announcements marked (muted)); the cues follow
+the switches and sound too, unless MELEE_A11Y_CUES=0. The launcher's
+scripts run with it. --speech speaks aloud, over the maintainer's screen
+reader.
+
+Each run starts from default settings in a settings folder of its own,
+--out's path plus .settings (build/drive/last.log.settings), named to the
+game by MELEE_USER_DIR and emptied before the game starts: launcher.cfg,
+the accessibility settings (a11y.ini, which MELEE_A11Y_SETTINGS names to the
+game) and everything else the game keeps in its settings folder land there,
+never in the maintainer's %APPDATA%\melee-pc. A non-empty
+MELEE_A11Y_SETTINGS in the environment names another accessibility
+settings file instead, kept as it is. The ini step reads whichever file
+the run has: the game saves a menu's change before it logs "accessibility
+settings: saved <key> = <value>", so after a wait for that line
+  ini '^cues\.volume = 95$'
+finds the new line at once.
+
+A run has no memory card (--no-card): the game builds a save with
+everything unlocked, and its memory card scene, reached with --scene "",
+says only "There is no Memory Card in Slot A." --card gives it a card
+instead, the run's own: aurora keeps slot A as a folder of save files,
+<settings folder>/USA/Card A, never the maintainer's. Empty, as each run
+starts it, it is a fresh install's card, and the memory card scene asks
+"Create Game Data?". --card GCI first copies the save file GCI there, named
+as aurora reads it (maker-game-name.gci, from the file's own entry, so any
+name will do): a corrupted save, a challenger's. The file is read before
+the settings folder is emptied, so it may be the last run's own save. A
+save the game made stays in the folder until the next run with the same
+--out, in build/drive/last.log.settings/USA/Card A by default (the US
+disc's 01-GALE-SuperSmashBros0110290334.gci).
+
+--corrupt, with --card GCI, flips a byte in each data block of the copy
+but the first (the banner and icons), which the game then finds corrupted:
+"The Game Data on the Memory Card in Slot A is corrupted. ..." One block
+spoilt is not enough; the game still loads the save.
+
+--card runs only from the memory card scene, --scene "", which is then
+the default: the scene shows only at a real start, which a boot scene
+skips. A boot scene would also skip loading the card, and the game's first
+save would write its default save over the card's file, so --card with
+any other scene is refused. A save that loads plays no prompt and goes on
+to the opening movie ("Opening movie. Press Start to skip."). A script
+written for the title screen starts with Start through the movie.
+
+The shader caches come from build/drive/cache/SLOT (--cache-slot, default
+1), first copied from the player's own: games running at once each need a
+slot of their own.
+
+The run ends with an implicit quit. A failed wait quits too and exits 1, and
+so does the game exiting before the script ends, as on a crash.
+"""
+import argparse
+import ctypes
+import ctypes.wintypes as wt
+import os
+import queue
+import re
+import shlex
+import shutil
+import struct
+import subprocess
+import sys
+import threading
+import time
+import zlib
+
+REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+# Logical GC button -> SDL scancode name, per the keymap in src/pc/keyboard.c.
+BUTTONS = {
+    "a": "X", "b": "Z", "x": "C", "y": "V", "z": "Tab", "l": "Q", "r": "E",
+    "start": "Return",
+    "up": "Up", "down": "Down", "left": "Left", "right": "Right",
+    "cup": "I", "cdown": "K", "cleft": "J", "cright": "L",
+    "dup": "T", "ddown": "G", "dleft": "F", "dright": "H",
+}
+
+DEFAULT_SHOW = ("[a11y]", "boot scene")
+# Seconds an event step waits for the game's answer: for each event of the
+# request (the game gives up on one left in SDL's queue after 10), and once
+# more for the first request (the game waits up to 30 for SDL to start).
+EVENT_TIMEOUT_EACH = 11
+EVENT_TIMEOUT_START = 30
+INI_TIMEOUT = 5  # seconds an ini step waits for its line, by default
+UNTIL_SETTLE = 1.5  # seconds a "press ... until" waits for its text before pressing again, by default
+SPEECH = "] speak "  # in every announcement's log line
+PAD_RE = re.compile(r"pad: btn ([0-9a-f]+) stick (-?\d+),(-?\d+) sub (-?\d+),(-?\d+) trig (\d+),(\d+)")
+
+kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+user32 = ctypes.WinDLL("user32", use_last_error=True)
+kernel32.CreateNamedPipeW.restype = wt.HANDLE
+kernel32.CreateNamedPipeW.argtypes = [wt.LPCWSTR, wt.DWORD, wt.DWORD, wt.DWORD, wt.DWORD,
+                                      wt.DWORD, wt.DWORD, wt.LPVOID]
+kernel32.ConnectNamedPipe.argtypes = [wt.HANDLE, wt.LPVOID]
+kernel32.CreateFileW.restype = wt.HANDLE
+kernel32.CreateFileW.argtypes = [wt.LPCWSTR, wt.DWORD, wt.DWORD, wt.LPVOID, wt.DWORD, wt.DWORD, wt.HANDLE]
+kernel32.WriteFile.argtypes = [wt.HANDLE, wt.LPCVOID, wt.DWORD, ctypes.POINTER(wt.DWORD), wt.LPVOID]
+kernel32.CloseHandle.argtypes = [wt.HANDLE]
+gdi32 = ctypes.WinDLL("gdi32", use_last_error=True)
+for fn, res, argtypes in (
+    (user32.GetDC, wt.HDC, [wt.HWND]),
+    (user32.ReleaseDC, ctypes.c_int, [wt.HWND, wt.HDC]),
+    (user32.PrintWindow, wt.BOOL, [wt.HWND, wt.HDC, wt.UINT]),
+    (user32.PostMessageW, wt.BOOL, [wt.HWND, wt.UINT, wt.WPARAM, wt.LPARAM]),
+    (user32.GetForegroundWindow, wt.HWND, []),
+    (user32.GetWindowThreadProcessId, wt.DWORD, [wt.HWND, ctypes.POINTER(wt.DWORD)]),
+    (user32.AttachThreadInput, wt.BOOL, [wt.DWORD, wt.DWORD, wt.BOOL]),
+    (user32.SetForegroundWindow, wt.BOOL, [wt.HWND]),
+    (user32.BringWindowToTop, wt.BOOL, [wt.HWND]),
+    (user32.ShowWindow, wt.BOOL, [wt.HWND, ctypes.c_int]),
+    (user32.SwitchToThisWindow, None, [wt.HWND, wt.BOOL]),
+    (user32.keybd_event, None, [wt.BYTE, wt.BYTE, wt.DWORD, ctypes.c_size_t]),
+    (kernel32.GetCurrentThreadId, wt.DWORD, []),
+    (gdi32.CreateCompatibleDC, wt.HDC, [wt.HDC]),
+    (gdi32.CreateCompatibleBitmap, wt.HBITMAP, [wt.HDC, ctypes.c_int, ctypes.c_int]),
+    (gdi32.SelectObject, wt.HGDIOBJ, [wt.HDC, wt.HGDIOBJ]),
+    (gdi32.DeleteObject, wt.BOOL, [wt.HGDIOBJ]),
+    (gdi32.DeleteDC, wt.BOOL, [wt.HDC]),
+    (gdi32.GetDIBits, ctypes.c_int, [wt.HDC, wt.HBITMAP, wt.UINT, wt.UINT, wt.LPVOID, wt.LPVOID, wt.UINT]),
+):
+    fn.restype, fn.argtypes = res, argtypes
+INVALID_HANDLE_VALUE = wt.HANDLE(-1).value
+PW_CLIENTONLY = 0x1
+PW_RENDERFULLCONTENT = 0x2
+SW_RESTORE = 9
+VK_MENU = 0x12
+KEYEVENTF_EXTENDEDKEY = 0x1
+KEYEVENTF_KEYUP = 0x2
+
+
+class BITMAPINFOHEADER(ctypes.Structure):
+    _fields_ = [("biSize", wt.DWORD), ("biWidth", wt.LONG), ("biHeight", wt.LONG), ("biPlanes", wt.WORD),
+                ("biBitCount", wt.WORD), ("biCompression", wt.DWORD), ("biSizeImage", wt.DWORD),
+                ("biXPelsPerMeter", wt.LONG), ("biYPelsPerMeter", wt.LONG), ("biClrUsed", wt.DWORD),
+                ("biClrImportant", wt.DWORD)]
+PIPE_ACCESS_OUTBOUND = 0x2
+ERROR_PIPE_CONNECTED = 535
+GENERIC_READ = 0x80000000
+OPEN_EXISTING = 3
+WM_CLOSE = 0x0010
+
+
+class ScriptError(Exception):
+    pass
+
+
+# The game's shader caches, SQLite files in the per-user %APPDATA%\melee-pc
+# unless MELEE_CACHE_DIR moves them (MELEE_USER_DIR does not). Two games running at once cannot share them:
+# the second logs "database is locked" and runs without its GPU cache.
+CACHE_FILES = ("pipeline_cache.db", "dawn_cache.db")
+
+
+def settings_dir(out):
+    """The settings folder of the run whose transcript is out, beside it."""
+    return os.path.abspath(out) + ".settings"
+
+
+def fresh_settings_dir(out):
+    """settings_dir(out), emptied, so the run starts from the defaults."""
+    path = settings_dir(out)
+    shutil.rmtree(path, ignore_errors=True)
+    os.makedirs(path)
+    return path
+
+
+# A GCI file, the emulated card's save file (aurora's lib/card/File.hpp,
+# big-endian): a 0x40-byte directory entry, then the file's 0x2000-byte
+# blocks, the count at 0x38.
+GCI_ENTRY = 0x40
+GCI_BLOCK = 0x2000
+GCI_BLOCK_COUNT = 0x38
+
+
+def card_save_place(data):
+    """Where aurora's card folder looks for the save whose GCI bytes are
+    data: (region, file name), the folder <user dir>/<region>/Card A. aurora
+    reads only a file named from its own entry, maker-game-name.gci
+    (gci_filename in CardGciFolder.cpp), so a save keeps that name whatever
+    it was called. The region is the save's own, from its game code's last
+    letter as get_card_region (dolphin/card.cpp) reads a disc's, so a save
+    from another region's disc lands in a folder this disc never reads.
+    ValueError for bytes that are no GCI file."""
+    if len(data) < GCI_ENTRY:
+        raise ValueError(f"{len(data)} bytes, shorter than a GCI file's 0x40-byte entry")
+    blocks = struct.unpack_from(">H", data, GCI_BLOCK_COUNT)[0]
+    if blocks == 0 or len(data) != GCI_ENTRY + blocks * GCI_BLOCK:
+        raise ValueError(f"{len(data)} bytes, not a GCI file's 0x40 plus 0x2000 per block "
+                         f"for the {blocks} block(s) its entry names")
+    game, maker, name = data[0:4], data[4:6], data[8:0x28].split(b"\0")[0]
+    if b"\0" in game + maker or not name:
+        raise ValueError("its entry names no game, maker or file")
+    canonical = f"{maker.decode('latin-1')}-{game.decode('latin-1')}-{name.decode('latin-1')}"
+    canonical = "".join("_" if ord(c) < 32 or c in '<>:"/\\|?*' else c for c in canonical)
+    region = {"P": "EUR", "J": "JAP"}.get(chr(game[3]), "USA")
+    return region, canonical + ".gci"
+
+
+def read_card_save(path):
+    """The GCI file at path, read and checked; ScriptError if it is none."""
+    try:
+        with open(path, "rb") as f:
+            data = f.read()
+        card_save_place(data)
+    except (OSError, ValueError) as e:
+        raise ScriptError(f"--card {path}: {e.strerror if isinstance(e, OSError) else e}")
+    return data
+
+
+def corrupted(data):
+    """The save's GCI bytes with byte 0x100 of every block but the first
+    flipped. Any one block, or a few, left the save loading in a run; all
+    of them gave the corrupted prompt. ScriptError for a one-block save,
+    which has nothing but its banner to spoil."""
+    out = bytearray(data)
+    blocks = struct.unpack_from(">H", data, GCI_BLOCK_COUNT)[0]
+    if blocks < 2:
+        raise ScriptError("--corrupt: a one-block save has no block to spoil but its banner")
+    for block in range(1, blocks):
+        out[GCI_ENTRY + block * GCI_BLOCK + 0x100] ^= 0xFF
+    return bytes(out)
+
+
+def put_card_save(user_dir, data):
+    """The save's GCI bytes into the card folder under user_dir, as the
+    game's own save is kept; its path."""
+    region, name = card_save_place(data)
+    folder = os.path.join(user_dir, region, "Card A")
+    os.makedirs(folder, exist_ok=True)
+    path = os.path.join(folder, name)
+    with open(path, "wb") as f:
+        f.write(data)
+    return path
+
+
+def write_launcher_cfg(folder, disc, check_updates=False):
+    """A launcher.cfg in the run's settings folder naming the disc, in
+    launcher_data.cpp's format (strings as std::quoted writes them), so the
+    launcher opens on Home with the disc remembered. check_updates 0 keeps
+    the update banner away: with it on, what Home says at start would
+    follow the network and the fork's latest release. It is on only for a
+    run with a canned release list (--update-list)."""
+    quoted = '"' + disc.replace("\\", "\\\\").replace('"', '\\"') + '"'
+    with open(os.path.join(folder, "launcher.cfg"), "w", encoding="utf-8") as f:
+        f.write(f"disc {quoted}\ncheck_updates {1 if check_updates else 0}\n")
+
+
+def category_names():
+    """The names of the sidebar categories on the launcher's and the port
+    menu's pages, as their buttons ("tab-x") show them."""
+    names = set()
+    for page in ("launcher.rml", "port-menu.rml"):
+        with open(os.path.join(REPO, "resources", page), encoding="utf-8") as f:
+            names.update(re.findall(r'<button id="tab-[^"]*"[^>]*>\s*<span>([^<]+)</span>', f.read()))
+    return sorted(names)
+
+
+# Presses that act on the focused control of an RmlUi page, by the names the
+# key and gamepad steps take.
+ACTIVATING = {("key", "return"), ("key", "keypad enter"), ("key", "space"), ("gamepad", "a"),
+              ("gamepad", "start")}
+# Presses that step the focused setting's value either way.
+STEPPING = {("key", "left"), ("key", "right"), ("gamepad", "dpleft"), ("gamepad", "dpright")}
+# A speak line that says where focus went: a control's announcement, alone
+# or inside an opening. A category's starts with its name, after the opening
+# ("Settings. ", "PC settings. ") if any, and ends there or at a full stop.
+# Value changes and lines of text do not count.
+FOCUS_LINE = re.compile(r", (button|edit|slider)\b|, (Enter|Left and right) to change\b"
+                        r'|: "(?:Settings\. |PC settings\. )?(?:' + "|".join(map(re.escape, category_names()))
+                        + r')[."]')
+# Controls a driven run must never press: Choose Disc opens the Windows file
+# dialog, which takes focus and cuts off the maintainer's screen reader
+# mid-sentence; Discord (Home's, and Join Discord on Settings) and the update
+# banner's buttons open the browser, which does too; Display mode switches to
+# fullscreen, and so does stepping its value with Left or Right.
+REFUSED_FOCUS = re.compile(r"\b(Choose Disc|Discord|Join Discord|Open release page|View Release|Update Now),"
+                           r" button|\bDisplay mode, \w+, ", re.IGNORECASE)
+REFUSED_STEP_FOCUS = re.compile(r"\bDisplay mode, \w+, ", re.IGNORECASE)
+
+
+def cache_dir(slot):
+    """build/drive/cache/SLOT, made on first use as a copy of the player's
+    own caches, so its first run need not build every shader afresh."""
+    path = os.path.join(REPO, "build", "drive", "cache", str(slot))
+    if not os.path.isdir(path):
+        os.makedirs(path)
+        player = os.path.join(os.environ.get("APPDATA", ""), "melee-pc")
+        for name in CACHE_FILES:
+            if os.path.isfile(os.path.join(player, name)):
+                shutil.copyfile(os.path.join(player, name), os.path.join(path, name))
+    return path
+
+
+class Pipe:
+    """The server end of a pipe a thread of the game reads lines from: the
+    key pipe (MELEE_KEY_FIFO) or the event pipe (MELEE_A11Y_EVENT_FIFO)."""
+
+    def __init__(self, name, label, why_missing=""):
+        self.name = name
+        self.label = label
+        self.why_missing = why_missing
+        self.handle = kernel32.CreateNamedPipeW(name, PIPE_ACCESS_OUTBOUND, 0, 1, 4096, 4096, 0, None)
+        if self.handle == INVALID_HANDLE_VALUE:
+            raise OSError(ctypes.get_last_error(), "CreateNamedPipeW failed")
+        self.connected = threading.Event()
+        threading.Thread(target=self._connect, daemon=True).start()
+
+    def _connect(self):
+        if kernel32.ConnectNamedPipe(self.handle, None) or ctypes.get_last_error() == ERROR_PIPE_CONNECTED:
+            self.connected.set()
+
+    def send(self, line, timeout, proc):
+        deadline = time.monotonic() + timeout
+        while not self.connected.wait(0.1):
+            if proc.poll() is not None:
+                raise ScriptError("the game exited")
+            if time.monotonic() > deadline:
+                raise ScriptError(f"the game never opened the {self.label}{self.why_missing}")
+        data = (line + "\n").encode()
+        written = wt.DWORD()
+        if not kernel32.WriteFile(self.handle, data, len(data), ctypes.byref(written), None):
+            raise ScriptError(f"writing to the {self.label} failed ({ctypes.get_last_error()})")
+
+    def close(self):
+        # CloseHandle blocks while _connect still waits in ConnectNamedPipe,
+        # as it does forever when the game died before opening the pipe;
+        # connecting as the client ends that wait.
+        if not self.connected.is_set():
+            client = kernel32.CreateFileW(self.name, GENERIC_READ, 0, None, OPEN_EXISTING, 0, None)
+            if client != INVALID_HANDLE_VALUE:
+                kernel32.CloseHandle(client)
+        kernel32.CloseHandle(self.handle)
+
+
+class Output:
+    """Every stdout and stderr line of the game, in arrival order."""
+
+    def __init__(self, proc, out_file, show, prefix=""):
+        self.lines = []
+        self.prefix = prefix
+        self.cond = threading.Condition()
+        self.out_file = out_file
+        self.show = show
+        self.printed = queue.Queue()
+        self.open_streams = 2
+        for stream in (proc.stdout, proc.stderr):
+            threading.Thread(target=self._read, args=(stream,), daemon=True).start()
+
+    def _read(self, stream):
+        for raw in stream:
+            line = raw.decode("utf-8", "replace").rstrip("\r\n")
+            with self.cond:
+                self.lines.append(line)
+                self.out_file.write(line + "\n")
+                self.out_file.flush()
+                self.cond.notify_all()
+            if self.show is None or any(s in line for s in self.show):
+                print(self.prefix + line, flush=True)
+        with self.cond:
+            self.open_streams -= 1
+            self.cond.notify_all()
+
+    def mark(self):
+        with self.cond:
+            return len(self.lines)
+
+    def wait_for(self, start, match, timeout):
+        """Index of the first line at or after start that match() accepts, or
+        None on timeout. Raises once the game has exited without one."""
+        deadline = time.monotonic() + timeout
+        i = start
+        with self.cond:
+            while True:
+                while i < len(self.lines):
+                    if match(self.lines[i]):
+                        return i
+                    i += 1
+                if self.open_streams == 0:
+                    raise ScriptError("the game exited")
+                left = deadline - time.monotonic()
+                if left <= 0:
+                    return None
+                self.cond.wait(left)
+
+
+def parse_steps(text, inline):
+    steps = []
+    for n, line in enumerate((text.replace(";", "\n") if inline else text).splitlines(), 1):
+        try:
+            words = shlex.split(line, comments=True)
+        except ValueError as e:
+            raise ScriptError(f"step {n}: {e}")
+        if words:
+            steps.append(words)
+    return steps
+
+
+def keys_for(spec):
+    keys = []
+    for name in spec.split("+"):
+        key = BUTTONS.get(name.lower())
+        if key is None:
+            raise ScriptError(f"unknown button {name!r}; known: {' '.join(sorted(BUTTONS))}")
+        keys.append(key)
+    return "+".join(keys)
+
+
+def parse_press(rest, captured):
+    """press BUTTONS [MS] [until RE [TIMES [SECONDS]]] -> (keys, hold, until,
+    times, every)"""
+    keys = keys_for(rest[0])
+    rest = rest[1:]
+    hold = 120
+    if rest and rest[0].lower() != "until":
+        hold = int(rest.pop(0))
+    until, times, every = None, 1, UNTIL_SETTLE
+    if rest and rest[0].lower() == "until" and len(rest) in (2, 3, 4):
+        until = pattern(rest[1], captured)
+        times = int(rest[2]) if len(rest) >= 3 else 20
+        every = float(rest[3]) if len(rest) == 4 else UNTIL_SETTLE
+    elif rest:
+        raise ScriptError(f"bad press arguments: {' '.join(rest)}")
+    return keys, hold, until, times, every
+
+
+def pattern(text, captured):
+    """text as a regular expression, each %NAME% replaced by the escaped text
+    a named group of that name last matched."""
+    def value(m):
+        if m.group(1) not in captured:
+            raise ScriptError(f"%{m.group(1)}% in {text!r} was never captured")
+        return re.escape(captured[m.group(1)])
+    try:
+        return re.compile(re.sub(r"%(\w+)%", value, text))
+    except re.error as e:
+        raise ScriptError(f"bad pattern {text!r}: {e}")
+
+
+def parse_search(rest):
+    """BUTTON[*N] ... -> the keys of each press, in order"""
+    presses = []
+    for word in rest:
+        spec, _, count = word.partition("*")
+        presses += [keys_for(spec)] * (int(count) if count else 1)
+    return presses
+
+
+STICK_KEYS = {"Up", "Down", "Left", "Right"}
+
+
+def pad_pressed(keys):
+    """A test for a "pad:" line showing the press of keys. A button press is
+    looked for among the buttons, sub-stick and triggers only: steering
+    (MELEE_A11Y_STEER) moves the main stick meanwhile."""
+    stick = any(key in STICK_KEYS for key in keys.split("+"))
+
+    def shows(line):
+        m = PAD_RE.search(line)
+        if m is None:
+            return False
+        values = [int(v, 16 if i == 0 else 10) for i, v in enumerate(m.groups())]
+        return any(values[1:3]) if stick else any(values[:1] + values[3:])
+    return shows
+
+
+def close_windows(pid):
+    """Post WM_CLOSE to the game's windows: a clean exit that takes no focus."""
+    found = game_windows(pid)
+    for hwnd in found:
+        user32.PostMessageW(hwnd, WM_CLOSE, 0, 0)
+    return bool(found)
+
+
+def game_windows(pid):
+    found = []
+
+    @ctypes.WINFUNCTYPE(wt.BOOL, wt.HWND, wt.LPARAM)
+    def each(hwnd, _):
+        owner = wt.DWORD()
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(owner))
+        if owner.value == pid and user32.IsWindowVisible(hwnd):
+            found.append(hwnd)
+        return True
+
+    user32.EnumWindows(each, 0)
+    return found
+
+
+def focus_window(proc, timeout):
+    """Wait for the game window and bring it to the front; returns how, or
+    None. Windows ignores SetForegroundWindow from a process that is not in
+    the foreground (as when an agent launches the run), so try the ways around
+    that from the least intrusive: sharing input state with the foreground
+    window's thread (fails when that is a console), Alt+Tab's own call, and
+    last a synthetic Alt press, which counts as this process's input."""
+    deadline = time.monotonic() + timeout
+    while not (windows := game_windows(proc.pid)):
+        if proc.poll() is not None or time.monotonic() > deadline:
+            raise ScriptError("no game window to focus")
+        time.sleep(0.1)
+    hwnd = windows[0]
+    user32.ShowWindow(hwnd, SW_RESTORE)
+
+    def focused():
+        time.sleep(0.1)
+        return user32.GetForegroundWindow() == hwnd
+
+    def attach():
+        ours = kernel32.GetCurrentThreadId()
+        theirs = user32.GetWindowThreadProcessId(user32.GetForegroundWindow(), None)
+        attached = theirs != ours and user32.AttachThreadInput(ours, theirs, True)
+        try:
+            user32.BringWindowToTop(hwnd)
+            user32.SetForegroundWindow(hwnd)
+        finally:
+            if attached:
+                user32.AttachThreadInput(ours, theirs, False)
+
+    def switch():
+        user32.SwitchToThisWindow(hwnd, True)
+
+    def alt_key():
+        # Alt goes down before the switch and up after it, so the old window
+        # never sees a lone Alt press and opens its menu bar.
+        user32.keybd_event(VK_MENU, 0, KEYEVENTF_EXTENDEDKEY, 0)
+        try:
+            user32.SetForegroundWindow(hwnd)
+        finally:
+            user32.keybd_event(VK_MENU, 0, KEYEVENTF_EXTENDEDKEY | KEYEVENTF_KEYUP, 0)
+
+    for how, attempt in (("thread attach", attach), ("SwitchToThisWindow", switch), ("Alt key", alt_key)):
+        attempt()
+        if focused():
+            return how
+    return None
+
+
+def screenshot(pid, path):
+    """Save the game window's client area as a PNG. PrintWindow asks the
+    window to render itself, so this works behind other windows and needs
+    no focus."""
+    windows = game_windows(pid)
+    if not windows:
+        raise ScriptError("no game window to capture")
+    hwnd = windows[0]
+    rect = wt.RECT()
+    user32.GetClientRect(hwnd, ctypes.byref(rect))
+    w, h = rect.right, rect.bottom
+    if w <= 0 or h <= 0:
+        raise ScriptError("the game window has no client area (minimized?)")
+    hdc_win = user32.GetDC(hwnd)
+    hdc = gdi32.CreateCompatibleDC(hdc_win)
+    bmp = gdi32.CreateCompatibleBitmap(hdc_win, w, h)
+    old = gdi32.SelectObject(hdc, bmp)
+    try:
+        if not user32.PrintWindow(hwnd, hdc, PW_CLIENTONLY | PW_RENDERFULLCONTENT):
+            raise ScriptError("PrintWindow failed")
+        info = BITMAPINFOHEADER(ctypes.sizeof(BITMAPINFOHEADER), w, -h, 1, 32, 0, 0, 0, 0, 0, 0)
+        buf = ctypes.create_string_buffer(w * h * 4)
+        if gdi32.GetDIBits(hdc, bmp, 0, h, buf, ctypes.byref(info), 0) != h:
+            raise ScriptError("GetDIBits failed")
+    finally:
+        gdi32.SelectObject(hdc, old)
+        gdi32.DeleteObject(bmp)
+        gdi32.DeleteDC(hdc)
+        user32.ReleaseDC(hwnd, hdc_win)
+    bgra = buf.raw
+    rows = bytearray()
+    for y in range(h):
+        row = bgra[y * w * 4:(y + 1) * w * 4]
+        rgb = bytearray(w * 3)
+        rgb[0::3], rgb[1::3], rgb[2::3] = row[2::4], row[1::4], row[0::4]
+        rows += b"\0" + rgb
+    write_png(path, w, h, bytes(rows))
+
+
+def write_png(path, w, h, filtered_rows):
+    def chunk(kind, data):
+        return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
+
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    with open(path, "wb") as f:
+        f.write(b"\x89PNG\r\n\x1a\n")
+        f.write(chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0)))
+        f.write(chunk(b"IDAT", zlib.compress(filtered_rows, 6)))
+        f.write(chunk(b"IEND", b""))
+
+
+def quit_game(proc, timeout=15):
+    if proc.poll() is not None:
+        return proc.returncode
+    # Resend while waiting: a quit early in startup can come before the window exists.
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        close_windows(proc.pid)
+        try:
+            return proc.wait(0.5)
+        except subprocess.TimeoutExpired:
+            pass
+    print(">> game did not exit after WM_CLOSE; killing it", flush=True)
+    proc.kill()
+    return proc.wait()
+
+
+class Game:
+    """One run of the game: launched silent and in the background unless
+    args say otherwise, fed input over its own key pipe, its output saved to
+    out and printed as it comes. step() runs one script step against it.
+    A name tells two games apart in the printed output and in the pipe's
+    name; env holds settings of this run over the ones every run gets; exe
+    is another build's melee.exe in place of build/melee.exe; cache_slot
+    names its shader caches (cache_dir)."""
+
+    def __init__(self, args, out, env=None, name=None, exe=None, cache_slot="1"):
+        self.args = args
+        self.name = name
+        self.cursor = 0
+        self.captured = {}
+        full_env = dict(os.environ)
+        pipe_name = rf"\\.\pipe\melee-drive-{os.getpid()}" + (f"-{name}" if name else "")
+        event_pipe_name = rf"\\.\pipe\melee-events-{os.getpid()}" + (f"-{name}" if name else "")
+        self.events_sent = 0
+        full_env.update({
+            "MELEE_KEY_FIFO": pipe_name,
+            "MELEE_A11Y_EVENT_FIFO": event_pipe_name,
+            "MELEE_INPUT_TRACE": "1",
+            "MELEE_BOOT_SCENE": args.scene,
+            "MELEE_NO_ATTRACT": "1",
+            "MELEE_EXIT_AFTER_FRAMES": str(args.max_frames),
+            "MELEE_LOG_FILE": os.path.abspath(out) + ".game.log",
+            "MELEE_CACHE_DIR": cache_dir(cache_slot),
+        })
+        if "MELEE_A11Y_STEER" not in os.environ:
+            # D-pad steering on character select, which Accessibility off
+            # (MELEE_A11Y=0, below) would otherwise switch off. Set in the
+            # environment it is the caller's: empty leaves Steering to the
+            # run's a11y.ini.
+            full_env["MELEE_A11Y_STEER"] = "1"
+        if getattr(args, "muted", False):
+            full_env["MELEE_A11Y_SCREEN_READER"] = "0"
+        elif not args.speech:
+            full_env["MELEE_A11Y"] = "0"
+        if not args.sound:
+            full_env["SDL_AUDIO_DRIVER"] = "dummy"
+        if not args.focus:
+            full_env["SDL_WINDOW_ACTIVATE_WHEN_SHOWN"] = "0"
+        update_list = getattr(args, "update_list", None)
+        if update_list:
+            full_env["MELEE_A11Y_UPDATE_LIST"] = os.path.join(REPO, update_list)
+        full_env.update(env or {})
+        exe = exe or os.path.join(REPO, "build", "melee.exe")
+        disc = os.path.join(REPO, args.disc)
+        self.launcher = getattr(args, "launcher", False)
+
+        # The memory card: None for none (--no-card), "" for the run's own
+        # empty card, or a save's path. The save is read before the
+        # settings folder is emptied, so it may be the last run's.
+        card = getattr(args, "card", None)
+        card_save = read_card_save(card) if card else None
+        if card_save and getattr(args, "corrupt", False):
+            card_save = corrupted(card_save)
+
+        os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
+        # The settings folder of this run alone (a base port build without
+        # MELEE_USER_DIR ignores it and takes the maintainer's). The card
+        # lives in it too, under <region>/Card A.
+        self.settings_dir = fresh_settings_dir(out)
+        self.card_save = put_card_save(self.settings_dir, card_save) if card_save else None
+        full_env["MELEE_USER_DIR"] = self.settings_dir
+        if not full_env.get("MELEE_A11Y_SETTINGS"):
+            # The accessibility settings in the run's folder too, named
+            # outright: empty would mean no file at all.
+            full_env["MELEE_A11Y_SETTINGS"] = os.path.join(self.settings_dir, "a11y.ini")
+        # The file the ini step reads; a relative name is the game's, from
+        # its working directory.
+        self.a11y_ini = os.path.join(REPO, full_env["MELEE_A11Y_SETTINGS"])
+        if self.launcher:
+            write_launcher_cfg(self.settings_dir, disc, check_updates=bool(update_list))
+        self.pipe = Pipe(pipe_name, "key pipe")
+        self.event_pipe = Pipe(event_pipe_name, "event pipe", " (a base port build has none)")
+        self.out_file = open(out, "w", encoding="utf-8")
+        if self.card_save:
+            self.note(f"card save: {self.card_save}" + (" (corrupted)" if getattr(args, "corrupt", False) else ""))
+        # No disc argument opens the launcher (src/pc/main.c).
+        command = [exe] + ([] if card is not None else ["--no-card"]) + ([] if self.launcher else [disc])
+        self.proc = subprocess.Popen(command, cwd=REPO, env=full_env,
+                                     stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.output = Output(self.proc, self.out_file, None if args.all else DEFAULT_SHOW,
+                             f"{name}| " if name else "")
+
+    def note(self, msg):
+        print(f">> {self.name + ' ' if self.name else ''}{msg}", flush=True)
+        self.out_file.write(f">> {msg}\n")
+
+    def press(self, keys, hold):
+        self.pipe.send(f"{keys} {hold}", self.args.timeout, self.proc)
+        if self.output.wait_for(self.output.mark(), pad_pressed(keys), 5 + hold / 1000) is None:
+            self.note("warning: no pad change seen for that press")
+
+    def push(self, request, events):
+        """Send one request down the event pipe ("key F1"), which the game
+        pushes as that many events, and wait for the game's answer to it,
+        which says the game's loop took them."""
+        self.events_sent += 1
+        n = self.events_sent
+        answer = re.compile(rf"\[a11y\] event {n}: ")
+        start = self.output.mark()
+        self.event_pipe.send(f"{n} {request}", self.args.timeout, self.proc)
+        timeout = EVENT_TIMEOUT_EACH * events + (EVENT_TIMEOUT_START if n == 1 else 0)
+        i = self.output.wait_for(start, answer.search, timeout)
+        if i is None:
+            raise ScriptError(f"no answer to {request!r} from the event pipe")
+        line = self.output.lines[i]
+        if not line.endswith(" taken"):
+            raise ScriptError(f"{request!r}: {line[answer.search(line).end():]}")
+
+    def check_press(self, cmd, name):
+        """Refuses a press that would act on a control the run must leave
+        alone (REFUSED_FOCUS, REFUSED_STEP_FOCUS for Left and Right), judged
+        by where the last focus announcement put focus. In launcher mode,
+        also one made before any says where.
+        The last one is current: a page speaks a focus move at the end of
+        the turn that took the press, and the press's release, which its
+        taken answer waits for, is taken only in a later turn."""
+        # Modifiers do not stop a press acting on the focused control.
+        press = (cmd, name.lower().split("+")[-1])
+        if press in ACTIVATING:
+            refused = REFUSED_FOCUS
+        elif press in STEPPING:
+            refused = REFUSED_STEP_FOCUS
+        else:
+            return
+        with self.output.cond:
+            spoken = [line for line in self.output.lines if SPEECH in line and FOCUS_LINE.search(line)]
+        if not spoken:
+            if self.launcher:
+                raise ScriptError(f"{cmd} {name} refused: no speech has said where the launcher's focus is")
+            return
+        if refused.search(spoken[-1]):
+            raise ScriptError(f"{cmd} {name} refused: it would press the control focused by {spoken[-1]!r}, "
+                              "which leaves the game's window (see REFUSED_FOCUS in drive.py)")
+
+    def ini_line(self, rx, timeout):
+        """Wait until a line of the run's a11y.ini matches rx and return it;
+        raises ScriptError once timeout passes without one. A read that
+        meets the save's rename is tried again."""
+        deadline = time.monotonic() + timeout
+        while True:
+            try:
+                with open(self.a11y_ini, encoding="utf-8") as f:
+                    lines = f.read().splitlines()
+            except OSError as e:
+                lines, why = [], f"cannot read {self.a11y_ini}: {e.strerror}"
+            else:
+                why = f"no line of {self.a11y_ini} matched"
+            for line in lines:
+                if rx.search(line):
+                    return line
+            if time.monotonic() >= deadline:
+                raise ScriptError(f"{why} {rx.pattern!r} in {timeout:g} s")
+            time.sleep(0.1)
+
+    def matched(self, rx, i):
+        """Line i matched rx: keeps its named groups."""
+        self.captured.update(rx.search(self.output.lines[i]).groupdict())
+        return i + 1
+
+    def step(self, words):
+        """Run one script step; True for quit. Raises ScriptError when it
+        fails."""
+        if self.proc.poll() is not None:
+            raise ScriptError(f"the game exited early with code {self.proc.returncode}")
+        output, captured = self.output, self.captured
+        cmd, rest = words[0].lower(), words[1:]
+        self.note(" ".join(words))
+        if cmd == "press" and rest:
+            keys, hold, until, times, every = parse_press(rest, captured)
+            self.cursor = output.mark()
+            for n in range(1, times + 1):
+                self.press(keys, hold)
+                if until is None:
+                    break
+                i = output.wait_for(self.cursor, until.search, every)
+                if i is not None:
+                    self.note(f"{until.pattern!r} after {n} press(es)")
+                    self.cursor = self.matched(until, i)
+                    break
+            else:
+                raise ScriptError(f"no {until.pattern!r} after {times} presses")
+        elif cmd == "search" and len(rest) >= 2:
+            rx = pattern(rest[0], captured)
+            presses = parse_search(rest[1:])
+            self.cursor = output.mark()
+            for n, keys in enumerate(presses, 1):
+                mark = output.mark()
+                self.press(keys, 120)
+                output.wait_for(mark, lambda line: SPEECH in line or rx.search(line), UNTIL_SETTLE)
+                i = output.wait_for(self.cursor, rx.search, 0)
+                if i is not None:
+                    self.note(f"{rx.pattern!r} after {n} press(es)")
+                    self.cursor = self.matched(rx, i)
+                    break
+            else:
+                raise ScriptError(f"no {rx.pattern!r} after {len(presses)} presses")
+        elif cmd == "wait" and len(rest) in (1, 2):
+            timeout = float(rest[1]) if len(rest) == 2 else self.args.timeout
+            rx = pattern(rest[0], captured)
+            i = output.wait_for(self.cursor, rx.search, timeout)
+            if i is None:
+                raise ScriptError(f"timed out after {timeout:g} s waiting for {rest[0]!r}")
+            self.cursor = self.matched(rx, i)
+        elif cmd in ("key", "gamepad") and rest:
+            self.cursor = output.mark()
+            for name in rest:
+                self.check_press(cmd, name)
+                self.push(f"{cmd} {name}", 2)  # a press and its release
+        elif cmd == "type" and len(rest) == 1:
+            self.cursor = output.mark()
+            self.push(f"text {rest[0]}", len(rest[0]))  # one event a character
+        elif cmd == "ini" and len(rest) in (1, 2):
+            rx = pattern(rest[0], captured)
+            line = self.ini_line(rx, float(rest[1]) if len(rest) == 2 else INI_TIMEOUT)
+            self.captured.update(rx.search(line).groupdict())
+            self.note(f"a11y.ini: {line}")
+        elif cmd == "sleep" and len(rest) == 1:
+            time.sleep(float(rest[0]))
+        elif cmd == "shot" and len(rest) == 1:
+            screenshot(self.proc.pid, rest[0])
+        elif cmd == "quit" and not rest:
+            return True
+        else:
+            raise ScriptError(f"bad step: {' '.join(words)}")
+        return False
+
+    def close(self):
+        """Quit the game if it still runs; its exit code."""
+        code = quit_game(self.proc)
+        self.pipe.close()
+        self.event_pipe.close()
+        time.sleep(0.2)  # let the reader threads drain the last lines
+        self.note(f"game exited with code {code}")
+        self.out_file.close()
+        return code
+
+
+def run(args, steps):
+    game = Game(args, args.out, cache_slot=args.cache_slot)
+    failed = False
+    try:
+        if args.focus:
+            game.note("focus the game window")
+            how = focus_window(game.proc, args.timeout)
+            game.note(f"focused by {how}" if how else "warning: Windows kept the game window in the background")
+        for words in steps:
+            if game.step(words):
+                break
+    except ScriptError as e:
+        game.note(f"FAILED: {e}")
+        failed = True
+    finally:
+        code = game.close()
+    return 1 if failed or code != 0 else 0
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("script", nargs="?", help="script file ('-' for stdin)")
+    ap.add_argument("-c", dest="inline", help="script text instead of a file")
+    ap.add_argument("--scene", help='MELEE_BOOT_SCENE (default title, or "" with --card)')
+    ap.add_argument("--card", nargs="?", const="", metavar="GCI",
+                    help="run with a memory card, the run's own (below), instead of --no-card; with GCI, "
+                         "a save copied onto it first. Only with --scene \"\", its default then")
+    ap.add_argument("--corrupt", action="store_true",
+                    help="with --card GCI, the copy corrupted (below), for the corrupted save's prompt")
+    ap.add_argument("--disc", default="melee.iso", help="disc image, relative to the repo root")
+    ap.add_argument("--launcher", action="store_true",
+                    help="open the launcher, with the disc remembered, instead of starting the disc")
+    ap.add_argument("--update-list", metavar="FILE",
+                    help="the update check on, reading this release list instead of GitHub's "
+                         "(MELEE_A11Y_UPDATE_LIST, below)")
+    ap.add_argument("--out", default=os.path.join(REPO, "build", "drive", "last.log"),
+                    help="full output transcript (default build/drive/last.log)")
+    ap.add_argument("--speech", action="store_true", help="speak through the screen reader (off by default)")
+    ap.add_argument("--muted", action="store_true",
+                    help="accessibility on as with --speech, but nothing reaches the screen reader "
+                         "(MELEE_A11Y_SCREEN_READER=0): for runs that check what the switch changes, "
+                         "such as the launcher's line reading")
+    ap.add_argument("--sound", action="store_true", help="play the game's audio (silent by default)")
+    ap.add_argument("--focus", action="store_true",
+                    help="bring the game window to the front once shown, e.g. for a sighted observer "
+                         "(interrupts the screen reader; keys typed into the window reach the game too)")
+    ap.add_argument("--all", action="store_true", help="print every game line, not just [a11y] and boot scene")
+    ap.add_argument("--timeout", type=float, default=30, help="default wait timeout in seconds")
+    ap.add_argument("--max-frames", type=int, default=60 * 60 * 10,
+                    help="MELEE_EXIT_AFTER_FRAMES backstop (default 10 minutes)")
+    ap.add_argument("--cache-slot", default="1",
+                    help="shader caches in build/drive/cache/SLOT (default 1); one per game running at once")
+    args = ap.parse_args()
+    # Game text can hold Japanese, which a console's code page may lack;
+    # --out keeps the exact line.
+    sys.stdout.reconfigure(errors="replace")
+    if sys.platform != "win32":
+        ap.error("Windows only; on Linux use MELEE_KEY_FIFO with a mkfifo pipe")
+    if args.speech and args.muted:
+        ap.error("--speech and --muted contradict each other")
+    if args.card is not None:
+        if args.scene:
+            # A boot scene skips loading the card, and the game's first
+            # save then writes its default save over the card's file
+            # (.scratch/boot-scene/issues/01-boot-scene-overwrites-save.md).
+            ap.error(f"--card runs only with --scene \"\": boot scene {args.scene!r} would skip loading the card "
+                     "and later overwrite its save")
+        if args.card:
+            try:
+                save = read_card_save(args.card)
+                if args.corrupt:
+                    corrupted(save)
+            except ScriptError as e:
+                ap.error(f"{e}" + (" (--card took the script file as its save: put the script first, "
+                                   "or write --card=GCI)" if args.card.endswith(".drive") else ""))
+    if args.corrupt and not args.card:
+        ap.error("--corrupt corrupts the save --card GCI copies; give one")
+    if args.scene is None:
+        args.scene = "" if args.card is not None else "title"
+    if (args.script is None) == (args.inline is None):
+        ap.error("give a script file or -c TEXT, not both")
+    if args.inline is not None:
+        text = args.inline
+    elif args.script == "-":
+        text = sys.stdin.read()
+    else:
+        with open(args.script, encoding="utf-8") as f:
+            text = f.read()
+    try:
+        steps = parse_steps(text, args.inline is not None)
+    except ScriptError as e:
+        ap.error(str(e))
+    sys.exit(run(args, steps))
+
+
+if __name__ == "__main__":
+    main()

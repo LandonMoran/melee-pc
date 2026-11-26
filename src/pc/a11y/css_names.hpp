@@ -1,0 +1,112 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
+/* Character select's string table: the characters' names as drawn under their
+ * portraits on the English screen, in normal capitalisation ("C.FALCON" is
+ * "C. Falcon"), so the blind player hears what a sighted player reads
+ * (.scratch/character-select/spec.md, "Where the words come from"). The game
+ * draws them as pictures, so there is no game text to read. Every other word
+ * character select speech says is here too. */
+#pragma once
+#include "character_kinds.h"
+#include "css_kinds.h"
+#include <optional>
+#include <string>
+#include <string_view>
+
+/* The match rules (game_access.h), kept off this header like the screen's
+ * other state. */
+struct A11yRules;
+
+namespace a11y {
+
+/* A character's name; nothing for none or a kind missing from the table. */
+std::optional<std::string_view> character_name(A11yCharacter character);
+
+/* A player slot's kind as a word, for the tab's "HMN", "CPU" and "N/A":
+ * "human", "CPU", "closed". */
+std::string_view slot_kind_word(A11yCssSlotKind kind);
+
+/* A team by the colour its button shows: "red", "blue", "green"; nothing for
+ * a number the game does not use. */
+std::optional<std::string_view> team_word(int team);
+
+/* A single-player mode's name, as the main menu tree says it ("Classic",
+ * "Training"); nothing for a VS mode or a number the game does not use. */
+std::optional<std::string_view> mode_name(int match_type);
+
+/* A difficulty as the arrows' strip draws it, "VERY EASY" to "VERY HARD":
+ * "Very easy" to "Very hard"; nothing outside 0 to 4. */
+std::optional<std::string_view> difficulty_word(int difficulty);
+
+/* The rules header's text as mnCharSel_8025BD30 composes it from SdSlChr's
+ * pieces on the English screen: "2-minute KO fest!", "An endless coin
+ * fest!", "3-man survival test!", "1-life survival test!", Camera mode's
+ * "Take Snapshots!". */
+std::string rules_header(int match_type, const A11yRules& rules);
+
+/* The top bar's buttons, the sliders and the name box, as spoken. */
+inline constexpr std::string_view kTeamsButton = "Teams";
+inline constexpr std::string_view kRulesButton = "Rules";
+inline constexpr std::string_view kBackButton = "Back";
+inline constexpr std::string_view kCpuLevelSlider = "CPU level";
+inline constexpr std::string_view kHandicapSlider = "handicap";
+inline constexpr std::string_view kNameBox = "name tag";
+/* A held slider's value is said on every step, so it gets a shorter word than
+ * the knob's name: "Level 4". */
+inline constexpr std::string_view kCpuLevelHeld = "Level";
+inline constexpr std::string_view kHandicapHeld = "Handicap";
+
+/* A single-player mode's arrows: the row's label as drawn, then which way
+ * the arrow steps ("Level: Normal, lower", "Stock: 3, more"). */
+inline constexpr std::string_view kDifficultyArrows = "Level";
+inline constexpr std::string_view kStockArrows = "Stock";
+inline constexpr std::string_view kLower = "lower";
+inline constexpr std::string_view kHigher = "higher";
+inline constexpr std::string_view kFewer = "fewer";
+inline constexpr std::string_view kMore = "more";
+
+/* The screen character select opens inside itself, as the main menu tree
+ * names it, and the name tag window. */
+inline constexpr std::string_view kNameEntryScreen = "Name Entry";
+inline constexpr std::string_view kNameTagsWindow = "Name tags";
+
+/* The rest of what character select says, around the names above. */
+inline constexpr std::string_view kScreenName = "Character select";
+/* After a single-player mode's name: "Classic character select". */
+inline constexpr std::string_view kModeScreenName = "character select";
+/* Training's second slot, the CPU's, drawn "CP". */
+inline constexpr std::string_view kCpu = "CPU";
+inline constexpr std::string_view kPlayer = "Player";
+inline constexpr std::string_view kTeam = "team";
+inline constexpr std::string_view kOn = "on";
+inline constexpr std::string_view kOff = "off";
+inline constexpr std::string_view kNoCharacter = "no character";
+inline constexpr std::string_view kUnknownCharacter = "Unknown character";
+inline constexpr std::string_view kCostume = "Costume";
+/* A coin by whose it is, "your coin" or "player 2's coin", as held ("Holding
+ * player 2's coin") and as a step finds it resting ("Yoshi, your coin"). */
+inline constexpr std::string_view kHolding = "Holding";
+inline constexpr std::string_view kYourCoin = "your coin";
+inline constexpr std::string_view kPlayersCoinBefore = "player ";
+inline constexpr std::string_view kPlayersCoinAfter = "'s coin";
+inline constexpr std::string_view kCpusCoin = "the CPU's coin";
+/* Before the other coins resting on a portrait after the one a step reaches
+ * ("Fox, your coin, also player 2's coin"). */
+inline constexpr std::string_view kAlso = "also";
+inline constexpr std::string_view kBackTo = "Back to";
+inline constexpr std::string_view kHoldingSlider = "Holding the slider";
+inline constexpr std::string_view kReleased = "Released";
+inline constexpr std::string_view kReadyToFight = "Ready to fight. Press Start.";
+inline constexpr std::string_view kNoSpeechYet = "No speech yet.";
+/* Steering: a step with nowhere to go, and a glide that did not get there
+ * ("Could not reach Fox"). */
+inline constexpr std::string_view kNothingThatWay = "Nothing that way";
+inline constexpr std::string_view kCouldNotReach = "Could not reach";
+/* A step onto the top bar with a coin in the hand: its buttons do not react
+ * to a hand that carries one ("Back, not available while holding a coin"). */
+inline constexpr std::string_view kNotAvailableWhileHoldingACoin =
+    "not available while holding a coin";
+/* A single-player mode started from another controller: steering reaches
+ * only controller 1's pad. */
+inline constexpr std::string_view kSteeringNeedsPort1 = "Steering needs controller 1.";
+
+}  // namespace a11y

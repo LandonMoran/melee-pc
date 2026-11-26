@@ -33,6 +33,7 @@ extern void browser_yield(void);
 #include "pc/net_lan.h"
 #include "pc/net_match.h"
 #include "pc/net_rank_session.h"
+#include "pc/a11y/a11y_hooks.h"
 
 bool pc_exit_requested;
 
@@ -351,7 +352,7 @@ void pc_frame_boundary(void) {
     PADStatus chat_pads[4] = {0};
     if (chat_eligible)
         PADRead(chat_pads);
-    pc_net_chat_poll(chat_pads[0].button, chat_eligible, SDL_GetTicks());
+    pc_net_chat_poll(pc_a11y_chat_buttons(chat_pads[0].button), chat_eligible, SDL_GetTicks());
     ifNetChat_Update(chat_eligible);
 
     s_retrace_count++;

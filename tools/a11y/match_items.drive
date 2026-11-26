@@ -1,0 +1,122 @@
+# Items appearing in a Training match on Final Destination: Pichu (player 1)
+# against a standing CPU. The Training menu's Item row makes a Food at
+# Pichu's feet while the menu holds the match: the announcement is said at
+# once, queued, and the appearance cue waits for the menu to close, then
+# plays where the Food lies. Relative to you, the default, that is level
+# with Pichu, so centred; with Items relative to you off, on the stage,
+# Pichu's place left of centre. The item's position cue starts with it and
+# follows it: Pichu runs right and back left until the Food is within reach
+# (the cue quickening, logged "cue item position within reach"), then A
+# eats it: the pickup is said in your voice, "Food" with the one CPU
+# unlabelled, and with no loose item left the cue stops. A second Food made
+# with the menu open again is said and played the same way, the position
+# cue starting with it and stopped as the menu pauses the match, and
+# Finish leaves.
+# Run with cues on and a trace and a dump:
+#   MELEE_A11Y_CUES=1 MELEE_A11Y_CUE_TRACE=build/drive/items.trace \
+#     MELEE_A11Y_CUE_DUMP=build/drive/items.f32 \
+#     python tools/a11y/drive.py tools/a11y/match_items.drive
+# then python tools/a11y/cue_dump.py build/drive/items.f32 --onsets. For the
+# stage frame, add MELEE_A11Y_SETTINGS naming a file of one line,
+# item_cues.relative = off.
+# drive.py turns steering on (MELEE_A11Y_STEER=1); --no-card unlocks every
+# stage.
+
+# Title screen to the main menu (tools/a11y/main_menu.drive).
+wait "state 0 scene 0$"
+press Start until "boot scene: game mode"
+press A until "boot scene: state 0 scene 1$" 20 0.3
+wait '"Main Menu\. 1-P Mode\. '
+sleep 1
+
+# 1-P Mode, Training.
+press A
+wait '"1-P Mode\. Regular Match\. '
+sleep 0.3
+press Down
+wait '"Event Match\. '
+press Down
+wait '"Stadium\. '
+press Down
+wait '"Training\. '
+sleep 0.3
+press A
+wait '"Training character select\. Player 1, no character\. CPU, (?P<cpu>.+)\."$'
+sleep 1
+
+# Pichu, which makes the match ready (tools/a11y/css_training.drive), the
+# CPU's coin on it too when the CPU is Pichu.
+press DUp
+wait ': "Holding your coin\. Pichu(, the CPU.s coin)?"$'
+wait 'glide to "Pichu[^"]*" ended after \d+ frames'
+press A
+wait 'Ready to fight\. Press Start\.'
+sleep 0.5
+press Start
+wait '"Stage select\. '
+sleep 1
+
+# Final Destination, at the end of the bottom row.
+press DDown
+wait ': "Icicle Mountain\. '
+search ': "Final Destination\. ' DDown*4 DRight*5
+wait 'glide to "Final Destination" ended after \d+ frames: arrived'
+press A
+
+# The match is under way once your position cue starts.
+wait 'cue your position start pan -0\.\d+ ' 60
+sleep 1
+
+# The menu, Down to Item, and A: a Food at Pichu's feet, said at once,
+# queued; the cue waits for the menu to close.
+press Start until '"Training menu\. Speed: x1\. Up and down for rows, left and right to adjust, A on Item, Reset and Finish, Start to close\."$' 20 1
+sleep 0.5
+press Down
+wait ': "Item: Food"$'
+sleep 0.3
+press A
+wait 'speak queue[^:]*: "Food"$'
+sleep 0.5
+
+# Start closes the menu: the cue plays on the first tick after, where the
+# Food lies.
+press Start
+wait 'cue item appearance 1 play pan -?0\.\d\d pitch [\d.]+ gain 1\.00$'
+wait 'cue item position start pan -?0\.\d\d pitch [\d.]+ gain 1\.00 interval 0\.\d+$'
+sleep 1
+
+# The item's position cue: Pichu runs right, away from the Food, which is
+# then behind on the left, out of reach; then back left, facing it, until
+# it is within reach; then A takes it, said in your voice, and with no
+# loose item left the cue stops.
+press Right 500
+sleep 1
+press Left 80 until 'cue item position within reach$' 30 0.4
+sleep 0.3
+# The pickup is said on the tick of the take, logged before the cue's stop
+# on the same tick.
+press A until 'voice yours[^:]*: "Food"$' 5 1
+wait 'cue item position stop'
+sleep 1
+
+# Again: the menu opens on Item, and a second Food is said and played.
+press Start until '"Training menu\. Item: Food\."$' 20 1
+sleep 0.5
+press A
+wait 'speak queue[^:]*: "Food"$'
+sleep 0.5
+press Start
+wait 'cue item appearance \d play pan -?0\.\d\d pitch [\d.]+ gain 1\.00$'
+sleep 1.5
+
+# Finish leaves for Training character select.
+press Start until '"Training menu\. Item: Food\."$' 20 1
+sleep 0.5
+press Up
+wait ': "Speed: x1"$'
+sleep 0.3
+press Up
+wait ': "Finish"$'
+sleep 0.3
+press A
+wait '"Training character select\. '

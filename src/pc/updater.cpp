@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "updater.hpp"
+#include "a11y/a11y_hooks.h"
 #include "version.hpp"
 
 #include <SDL3/SDL.h>
@@ -645,14 +646,13 @@ void check_for_updates_async(bool include_prereleases) {
     g_worker.thread = std::thread([include_prereleases] {
         std::string body;
         std::string error;
-        bool ok = false;
+        bool ok = pc_a11y_update_list_file(body);  // a11y: a canned list instead of GitHub
 
 #if defined(_WIN32)
-        ok = http_get_string_winhttp(
-            L"api.github.com", L"/repos/999sian/melee-pc/releases", body, error);
+        ok = ok ||  // a11y
+             http_get_string_winhttp(L"api.github.com", pc_a11y_update_api_path(), body, error);
 #elif defined(MELEE_USE_CURL)
-        ok = http_get_string_curl(
-            "https://api.github.com/repos/999sian/melee-pc/releases", body, error);
+        ok = ok || http_get_string_curl(pc_a11y_update_api_url(), body, error);  // a11y
 #else
         error = "Networking unsupported on this platform";
 #endif
@@ -670,6 +670,7 @@ void check_for_updates_async(bool include_prereleases) {
             return;
         }
 
+        return pc_a11y_update_result(body, g_updater_state);  // a11y: replaces the choice below
         auto releases = parse_github_releases(body);
         if (releases.empty()) {
             g_updater_state.status = Status::UpToDate;
@@ -823,7 +824,7 @@ void open_release_in_browser() {
         url = g_updater_state.latest_release.html_url;
     }
     if (url.empty()) {
-        url = "https://github.com/999sian/melee-pc/releases";
+        url = pc_a11y_update_releases_page();  // a11y
     }
     SDL_OpenURL(url.c_str());
 }

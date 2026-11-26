@@ -1,0 +1,130 @@
+# Opens Erase Data from Options and walks its rows with both wraps; opens
+# the prompt and closes it with No and with B; erases Hidden Characters,
+# hovers it again and presses A on it, which does nothing; takes Erase All
+# through both prompts and hovers the marked rows; goes back to Options with
+# B and opens the screen again, its marks cleared and the prompt's keys said
+# again. The erases reach the save only in memory: run with no card, the
+# default, never with the maintainer's:
+#   python tools/a11y/drive.py tools/a11y/erase_data.drive
+# run_level.py counts the prompt openings: A on the erased row opening one
+# fails it.
+
+# Title screen to the main menu (tools/a11y/main_menu.drive).
+wait "state 0 scene 0$"
+press Start until "boot scene: game mode"
+press A until "boot scene: state 0 scene 1$" 20 0.3
+wait '"Main Menu\. 1-P Mode\. '
+# The menu ignores input for its first 20 frames.
+sleep 1
+
+# Options, then Erase Data, Up from Rumble.
+press Down
+wait '"VS\. Mode\. '
+press Down
+wait '"Trophies\. '
+press Down
+wait '"Options\. '
+press A
+wait '"Options\. Rumble\. '
+sleep 0.3
+press Up
+wait '"Erase Data\. '
+
+# The opening, then the rows both ways round.
+press A
+wait '"Erase Data\. Hidden Characters\. Up and down to move, A to erase\. Erase data which unlocked hidden characters\."'
+sleep 1
+press Down
+wait '"Hidden Stages\. Erase data which unlocked hidden stages\."'
+press Up
+wait '"Hidden Characters\. '
+press Up
+wait '"Erase All\. '
+press Down
+wait '"Hidden Characters\. '
+press Down
+wait '"Hidden Stages\. '
+press Down
+wait '"1-P High Score\. '
+press Down
+wait '"VS\. Mode Scores\. '
+press Down
+wait '"Trophy Collection\. '
+press Down
+wait '"Erase All\. '
+press Down
+wait '"Hidden Characters\. '
+
+# The prompt, its keys the first time, closed by No and then by B.
+press A
+wait '"Erase\? No\. Left and right to choose, A to confirm\."'
+sleep 0.5
+press Right
+wait '"Yes"$'
+press Left
+wait '"No"$'
+press A
+sleep 0.5
+press A
+wait '"Erase\? No"$'
+sleep 0.5
+press Right
+wait '"Yes"$'
+press B
+sleep 0.5
+
+# Erase Hidden Characters, hover it again, and A on it, which does nothing.
+press A
+wait '"Erase\? No"$'
+sleep 0.5
+press Right
+wait '"Yes"$'
+press A
+sleep 0.5
+press Down
+wait '"Hidden Stages\. '
+press Up
+wait '"Hidden Characters: erased\. Erase data which unlocked hidden characters\."'
+sleep 0.3
+press A
+sleep 0.5
+
+# Erase All through both prompts, then its marks on every row.
+press Up
+wait '"Erase All\. '
+press A
+wait '"Erase\? No"$'
+sleep 0.5
+press Right
+wait '"Yes"$'
+press A
+wait '"Are you sure\? No"$'
+sleep 0.5
+press Right
+wait '"Yes"$'
+press A
+sleep 0.5
+press Down
+wait '"Hidden Characters: erased\. '
+press Down
+wait '"Hidden Stages: erased\. '
+press Up
+wait '"Hidden Characters: erased\. '
+press Up
+wait '"Erase All: erased\. '
+
+# Back to Options, and the screen again: the marks are cleared, and the
+# prompt's keys are said again.
+press B
+wait '"Options\. Erase Data\. '
+sleep 0.5
+press A
+wait '"Erase Data\. Hidden Characters\. Up and down to move, A to erase\. '
+sleep 1
+press A
+wait '"Erase\? No\. Left and right to choose, A to confirm\."'
+sleep 0.5
+press B
+sleep 0.5
+press B
+wait '"Options\. Erase Data\. '

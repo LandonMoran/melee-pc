@@ -1,0 +1,358 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
+r"""Drive two game runs in one netplay session over loopback, from one script.
+
+Windows only. Starts build/melee.exe twice as drive.py does (silent, in the
+background, speech off, steering on), connected to each other: instance a is
+player 1 (P1, controller port 1) and instance b player 2. Each has its own key
+pipe, so a press on b drives port 2. The session begins at the title screen
+and the two walk the ordinary menus in sync, so a's presses move the menus of
+both.
+
+  python tools/a11y/drive_net.py [options] SCRIPT_FILE
+
+Every step is a drive.py step (see drive.py --help) addressed to one
+instance by a first word, a or b:
+
+  a press Start until "boot scene: game mode"
+  b wait '"Character select\. Player 2, no character\."'
+
+A wait or search looks at that instance's output only, and named groups
+are kept per instance. sleep and quit may stand without an instance; quit ends
+the script, and the run ends with an implicit one, which closes both. Addressed
+to one instance, quit closes that one alone, as a player closing the game, and
+the other plays on:
+
+  a quit
+  b wait '"Connection lost\.'
+
+With --base-b, instance b is a base port build, the one in that build
+directory, so it logs no [a11y] lines. A base port build lacks MELEE_USER_DIR
+(unless the base port has taken it since), so b then starts from the
+maintainer's own settings in %APPDATA%\melee-pc and may write them, while a
+starts from the defaults. With --direct as well, the base port build keeps
+its recent opponents there, in contacts.txt: the run sets the maintainer's
+file aside while it runs, so b starts with none, and puts it back after. A
+step addressed to b-fork runs only when b is the fork's build and one
+addressed to b-base only when it is the base port's, so one script can wait
+on b's speech in the one case and wait otherwise in the other:
+
+  b-fork wait '"Holding your coin'
+  b-base sleep 1
+
+The key, type and gamepad steps go through the fork's event pipe, which a
+base port build lacks, so address them to b-fork when b may be one.
+
+Each instance's output goes to OUT_DIR/a.log and b.log, its game log beside
+it (a.log.game.log), its settings folder too (a.log.settings, as drive.py
+gives every run) and its recording of controller data (MELEE_NET_RECORD)
+to a.rec and b.rec. After the script, the run fails unless both logs show a
+session (net: rollback with), neither logs net: DESYNC, and the two
+recordings hold the same data for the frames both recorded in the session.
+The summary lists the delay each side used and every glide's frames.
+a and b keep their shader caches in slots 1 and 2 (drive.py --cache-slot);
+--cache-slots names two others, for runs side by side.
+
+With --lan, the two start with no session: each walks the menus on its own
+presses into the LAN lobby, where they find each other by mDNS over the
+machine's network interface, and Start on one makes it the host (player 1)
+and pulls the other in as player 2. Each instance's recording would start at
+boot and run on into the session without a new header, so the two share no
+frame numbers: --lan records nothing and leaves desyncs to net: DESYNC.
+Windows Firewall must let melee.exe take UDP in, or the first run prompts
+and steals focus.
+
+With --direct, the two also start with no session, and boot straight into
+DIRECT CONNECT's hub (MELEE_BOOT_SCENE=direct), each on its own UDP port and
+with a fresh settings folder, so a fresh connect code. They meet over the
+internet: each joins the public BitTorrent DHT, and a copy reaches the
+other only through the router's public address, so the router must loop
+it back in (NAT loopback). One waits ("Wait for a friend to call me") and
+logs its code; the other, on the code keyboard, takes a dial step:
+
+  b dial a
+
+which types the eight characters of the code a logged as waiting, by
+D-pad presses and A from the keyboard's first key, then presses Start and
+waits for b's log to name that code as the one called. Recording is left
+out as with --lan.
+"""
+import argparse
+import os
+import re
+import sys
+import time
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import drive  # noqa: E402
+from drive import Game, ScriptError, parse_steps  # noqa: E402
+
+NAMES = ("a", "b")
+# Steps addressed to b that run only with b a fork build, or a base port
+# build (--base-b).
+ONLY = {"b-fork": False, "b-base": True}
+# One frame of a recording (src/pc/net_snapshot.c FrameRecord): four
+# PADStatus of 16 bytes, the checksum, the RNG seed and the scene. Each
+# session starts with "MRC5" and the seed.
+MAGIC = b"MRC5"
+HEADER = 8
+RECORD = 76
+PADS = 64
+DISCONNECTED = re.compile(r"net: disconnected at frame (\d+)")
+# The code keyboard of Direct Connect (gmonlinemode.c directEntryFrame): the
+# code alphabet in rows of eight, every edge wrapping, the cursor on its
+# first key when the keyboard opens.
+CODE_KEYS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"
+CODE_COLS = 8
+CODE_ROWS = len(CODE_KEYS) // CODE_COLS
+WAITING = re.compile(r"lobby: direct connect waiting as '[^']*#([A-Z2-7]{8})'")
+# A base port build lacks MELEE_USER_DIR, so with --direct it reads and
+# writes the maintainer's recent opponents in SDL's pref path. The run moves
+# the file aside, or leaves a marker where there was none, and undoes that
+# after, first undoing any a killed run left.
+CONTACTS = os.path.join(os.environ.get("APPDATA", ""), "melee-pc", "contacts.txt")
+CONTACTS_ASIDE = CONTACTS + ".drive_net-aside"
+CONTACTS_NONE = CONTACTS + ".drive_net-none"
+
+
+def records(path):
+    """The frames of the last session in a recording, oldest first. A
+    session that restarts writes its header again; the last header that
+    leaves whole records is the live one."""
+    with open(path, "rb") as f:
+        data = f.read()
+    p = len(data)
+    while (p := data.rfind(MAGIC, 0, p)) >= 0:
+        if (len(data) - p - HEADER) % RECORD == 0:
+            body = data[p + HEADER:]
+            return [body[i:i + RECORD] for i in range(0, len(body), RECORD)]
+    raise ScriptError(f"{path}: no whole recording of {RECORD}-byte frames")
+
+
+def compare_recordings(path_a, path_b, end):
+    """A list of problems: the first frame whose controller data or checksum
+    differ between the two, among the frames both recorded before end."""
+    rec_a, rec_b = records(path_a), records(path_b)
+    both = min(len(rec_a), len(rec_b), end)
+    for f in range(both):
+        if rec_a[f][:PADS] != rec_b[f][:PADS]:
+            return [f"controller data differ from frame {f} of {both}"]
+        if rec_a[f] != rec_b[f]:
+            return [f"checksum, seed or scene differ from frame {f} of {both}"]
+    print(f">> recordings agree over {both} frames (a {len(rec_a)}, b {len(rec_b)})", flush=True)
+    return [] if both else ["the recordings hold no frames"]
+
+
+def code_presses(code):
+    """The D-pad presses and A presses that type code on the code keyboard
+    from its first key, the shorter way round each wrapping row and column."""
+    presses, at = [], 0
+    for ch in code:
+        to = CODE_KEYS.index(ch)
+        for axis, size, near, far in ((at % CODE_COLS, CODE_COLS, "DRight", "DLeft"),
+                                      (at // CODE_COLS, CODE_ROWS, "DDown", "DUp")):
+            target = to % CODE_COLS if size == CODE_COLS else to // CODE_COLS
+            steps = (target - axis) % size
+            presses += [near] * steps if steps <= size // 2 else [far] * (size - steps)
+        presses.append("A")
+        at = to
+    return presses
+
+
+def dial(caller, callee):
+    """Type on caller's code keyboard the code callee logged as waiting,
+    call it, and check that caller called that code."""
+    with callee.output.cond:
+        found = [m.group(1) for line in callee.output.lines if (m := WAITING.search(line))]
+    if not found:
+        raise ScriptError(f"{callee.name} has logged no code it waits as")
+    code = found[-1]
+    caller.note(f"dial {code}")
+    for button in code_presses(code):
+        caller.step(["press", button])
+    caller.step(["press", "Start"])
+    caller.step(["wait", re.escape(f"lobby: direct connect calling '#{code}'"), "5"])
+
+
+def session_end(games):
+    """The first frame either game simulated outside the session. The side
+    that leaves first records its next frames offline, its peer's port
+    unplugged, while the other may still record that frame in session."""
+    ends = [int(m.group(1)) for game in games.values() for line in game.output.lines
+            if (m := DISCONNECTED.search(line))]
+    return min(ends, default=sys.maxsize)
+
+
+# Lines the summary repeats: the session's start, its delays and the LAN
+# lobby's discovery and host election.
+SUMMARY = ("net: rollback with", "net: delay ", "peer silent", "lan: found", "lan: lost",
+           "lan: host election", "lan: failed", "lobby: entering CSS")
+
+
+def check_logs(games):
+    problems = []
+    for name, game in games.items():
+        lines = game.output.lines
+        if not any("net: rollback with" in line for line in lines):
+            problems.append(f"{name} never started a session")
+        problems += [f"{name}: {line}" for line in lines if "net: DESYNC" in line]
+        for line in lines:
+            if any(s in line for s in SUMMARY):
+                print(f">> {name} {line}", flush=True)
+        for line in lines:
+            if "glide to " in line:
+                print(f">> {name} {line[line.index('glide to '):]}", flush=True)
+    return problems
+
+
+def set_contacts_aside():
+    restore_contacts()
+    if os.path.exists(CONTACTS):
+        os.replace(CONTACTS, CONTACTS_ASIDE)
+    else:
+        open(CONTACTS_NONE, "w").close()
+    print(f">> {CONTACTS} set aside while b runs", flush=True)
+
+
+def restore_contacts():
+    if os.path.exists(CONTACTS_ASIDE):
+        os.replace(CONTACTS_ASIDE, CONTACTS)
+    elif os.path.exists(CONTACTS_NONE):
+        if os.path.exists(CONTACTS):
+            os.remove(CONTACTS)
+        os.remove(CONTACTS_NONE)
+
+
+def run(args, steps):
+    common = {"MELEE_SEED": args.seed, "MELEE_NET_DELAY": args.delay}
+    if not args.lan and not args.direct:
+        common["MELEE_NET_KEY"] = args.key
+    if args.sim_delay_ms:
+        common["MELEE_NET_SIM_DELAY_MS"] = str(args.sim_delay_ms)
+    out = {name: os.path.join(args.out_dir, name) for name in NAMES}
+    for name in NAMES:
+        # A run that never starts its game must not be checked against an
+        # earlier run's recording.
+        if os.path.exists(out[name] + ".rec"):
+            os.remove(out[name] + ".rec")
+    if args.base_b:
+        print(f">> b is the base port build in {args.base_b}", flush=True)
+    contacts = args.base_b and args.direct
+    if contacts:
+        set_contacts_aside()
+    games = {}
+    failed = False
+    try:
+        for player, name in enumerate(NAMES):
+            env = dict(common, MELEE_NET_PORT=str(args.port + player))
+            if not args.lan and not args.direct:
+                env["MELEE_NET"] = f"127.0.0.1:{args.port + 1 - player}"
+                env["MELEE_NET_PLAYER"] = str(player)
+                env["MELEE_NET_RECORD"] = out[name] + ".rec"
+            exe = os.path.join(args.base_b, "melee.exe") if name == "b" and args.base_b else None
+            games[name] = Game(args, out[name] + ".log", env, name, exe, args.cache_slots[player])
+        for words in steps:
+            if words[0].lower() == "quit":
+                break
+            if words[0].lower() == "sleep":
+                print(f">> {' '.join(words)}", flush=True)
+                time.sleep(float(words[1]))
+                continue
+            if words[0] in ONLY:
+                if ONLY[words[0]] != bool(args.base_b):
+                    continue
+                words = ["b"] + words[1:]
+            if len(words) == 3 and words[1].lower() == "dial":
+                dial(games[words[0]], games[words[2]])
+                continue
+            if len(words) == 2 and words[1].lower() == "quit":
+                games[words[0]].note("quit")
+                drive.quit_game(games[words[0]].proc)
+                continue
+            games[words[0]].step(words[1:])
+    except ScriptError as e:
+        print(f">> FAILED: {e}", flush=True)
+        failed = True
+    finally:
+        codes = {name: game.close() for name, game in games.items()}
+        if contacts:
+            restore_contacts()
+    problems = [f"{name} exited with code {code}" for name, code in codes.items() if code != 0]
+    try:
+        problems += check_logs(games)
+        if not args.lan and not args.direct:
+            problems += compare_recordings(out["a"] + ".rec", out["b"] + ".rec", session_end(games))
+    except (OSError, ScriptError) as e:
+        problems.append(str(e))
+    for problem in problems:
+        print(f">> FAILED: {problem}", flush=True)
+    if not failed and not problems:
+        print(">> passed", flush=True)
+    return 1 if failed or problems else 0
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("script", help="script file")
+    ap.add_argument("--out-dir", default=os.path.join(drive.REPO, "build", "drive", "net"),
+                    help="where the logs and recordings go (default build/drive/net)")
+    ap.add_argument("--delay", default="auto", help="MELEE_NET_DELAY, frames or auto (default auto)")
+    ap.add_argument("--sim-delay-ms", type=int, default=0,
+                    help="MELEE_NET_SIM_DELAY_MS on both sides: each holds every packet it sends that long")
+    ap.add_argument("--port", type=int, default=42050, help="a's UDP port; b's is the next (default 42050)")
+    ap.add_argument("--key", default="a11ytest", help="MELEE_NET_KEY, shared by both")
+    ap.add_argument("--lan", action="store_true",
+                    help="no session at boot: the two meet in the LAN lobby")
+    ap.add_argument("--direct", action="store_true",
+                    help="no session at boot: the two start in DIRECT CONNECT's hub and meet over the "
+                         "internet, which needs a router with NAT loopback")
+    ap.add_argument("--seed", default="7", help="MELEE_SEED, shared by both")
+    ap.add_argument("--base-b", metavar="BUILD_DIR",
+                    help="run instance b from a base port build directory, such as a worktree's build; "
+                         "it uses the maintainer's own settings folder, its recent opponents set aside "
+                         "with --direct")
+    ap.add_argument("--muted", action="store_true",
+                    help="accessibility on in both, as for a player, with nothing sent to the screen "
+                         "reader, as drive.py --muted")
+    ap.add_argument("--disc", default="melee.iso", help="disc image, relative to the repo root")
+    ap.add_argument("--all", action="store_true", help="print every game line, not just [a11y] and boot scene")
+    ap.add_argument("--timeout", type=float, default=30, help="default wait timeout in seconds")
+    ap.add_argument("--max-frames", type=int, default=60 * 60 * 10,
+                    help="MELEE_EXIT_AFTER_FRAMES backstop (default 10 minutes)")
+    ap.add_argument("--cache-slots", default="1,2",
+                    help="a's and b's shader caches, build/drive/cache/SLOT (default 1,2)")
+    args = ap.parse_args()
+    # What Game reads from drive.py's options: both runs start at the title
+    # screen, silent, in the background and without speech.
+    args.scene = "direct" if args.direct else "title"
+    args.speech, args.sound, args.focus = False, False, False
+    sys.stdout.reconfigure(errors="replace")
+    if sys.platform != "win32":
+        ap.error("Windows only; on Linux use tools/net_test.py")
+    args.cache_slots = args.cache_slots.split(",")
+    if len(args.cache_slots) != 2 or len(set(args.cache_slots)) != 2:
+        ap.error("--cache-slots takes two different slots, a's and b's")
+    with open(args.script, encoding="utf-8") as f:
+        text = f.read()
+    try:
+        steps = parse_steps(text, False)
+    except ScriptError as e:
+        ap.error(str(e))
+    for words in steps:
+        cmd = words[0].lower()
+        if cmd == "sleep" and len(words) != 2 or cmd == "quit" and len(words) != 1:
+            ap.error(f"bad step: {' '.join(words)}")
+        if cmd not in ("sleep", "quit") and (words[0] not in NAMES + tuple(ONLY) or len(words) < 2):
+            ap.error(f"a step begins with a, b, b-fork or b-base: {' '.join(words)}")
+        if len(words) > 1 and words[1].lower() == "dial" and (
+                len(words) != 3 or words[2] not in NAMES or words[0] in (words[2], "b-" + words[2])):
+            ap.error(f"dial names the other instance: {' '.join(words)}")
+    if args.lan and args.direct:
+        ap.error("--lan and --direct are two ways to meet; choose one")
+    if args.base_b and not os.path.isfile(os.path.join(args.base_b, "melee.exe")):
+        ap.error(f"no melee.exe in {args.base_b}")
+    sys.exit(run(args, steps))
+
+
+if __name__ == "__main__":
+    main()

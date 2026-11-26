@@ -12,6 +12,7 @@
 #include <SDL3/SDL_events.h>
 #include <jni.h>
 #include <mutex>
+#include <stdio.h>
 
 /* Every signature below was taken from android-34 android.jar with
  * `javap -s -constants`, not from memory:
@@ -281,6 +282,42 @@ void pc_android_export_logs(void) {
     env->PopLocalFrame(nullptr);
 }
 
+/* MeleeActivity.getA11ySoundsDir ()Ljava/lang/String; unpacks the cues' sound
+ * files from the APK into the app's own files directory on first ask, since
+ * assets inside the APK are not a folder the cue engine could read. */
+const char* pc_android_a11y_sounds_dir(void) {
+    static char s_dir[4096];
+    static bool s_done;
+    std::lock_guard<std::mutex> guard(g_mutex);
+    if (!s_done) {
+        s_done = true;
+        JNIEnv* env = (JNIEnv*)SDL_GetAndroidJNIEnv();
+        if (env != nullptr && env->PushLocalFrame(8) == JNI_OK) {
+            jobject activity = (jobject)SDL_GetAndroidActivity();
+            jclass cls = activity != nullptr ? env->GetObjectClass(activity) : nullptr;
+            jmethodID method = cls != nullptr ?
+                                   env->GetMethodID(
+                                       cls, "getA11ySoundsDir", "()Ljava/lang/String;") :
+                                   nullptr;
+            if (method != nullptr) {
+                jstring dir = (jstring)env->CallObjectMethod(activity, method);
+                if (!threw(env, "getA11ySoundsDir") && dir != nullptr) {
+                    const char* utf = env->GetStringUTFChars(dir, nullptr);
+                    if (utf != nullptr) {
+                        snprintf(s_dir, sizeof s_dir, "%s", utf);
+                        env->ReleaseStringUTFChars(dir, utf);
+                    }
+                }
+            }
+            env->PopLocalFrame(nullptr);
+        }
+        if (s_dir[0] == '\0') {
+            pc_log_line("a11y: no unpacked cue sounds: the audio cues stay silent");
+        }
+    }
+    return s_dir[0] != '\0' ? s_dir : nullptr;
+}
+
 const char* pc_android_device_name(void) {
     static char s_label[64];
     static bool s_done;
@@ -318,6 +355,10 @@ void pc_android_set_launcher_active(bool active) {
 }
 
 const char* pc_android_device_name(void) {
+    return nullptr;
+}
+
+const char* pc_android_a11y_sounds_dir(void) {
     return nullptr;
 }
 

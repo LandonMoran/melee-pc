@@ -41,6 +41,11 @@ const char* pc_android_device_name(void);
 void pc_android_set_launcher_active(bool active);
 /* Open Android's document picker to save recent app logs without adb. */
 void pc_android_export_logs(void);
+/* The folder the accessibility cues' sound files were unpacked into from the
+ * APK (MeleeActivity.getA11ySoundsDir), with its trailing separator, or NULL
+ * when they could not be unpacked. gethostpath-style: owned by the callee and
+ * cached. Every other platform returns NULL and its cues read resources/. */
+const char* pc_android_a11y_sounds_dir(void);
 /* Apply the saved fullscreen preference to Android system bars. */
 bool pc_android_set_fullscreen(bool fullscreen);
 

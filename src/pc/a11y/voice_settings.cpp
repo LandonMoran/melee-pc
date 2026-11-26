@@ -1,0 +1,280 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
+#include "voice_settings.hpp"
+#include "cue_engine.hpp"
+#include "voice_names.hpp"
+#include <algorithm>
+#include <cctype>
+#include <chrono>
+#include <utility>
+
+namespace a11y {
+namespace {
+
+/* A voice's boost to start with, for both voices: a tuning value, set by
+ * ear against the game's sounds at full volume. Its loudest moments reach
+ * the mix's soft limit. */
+constexpr float kVoiceBoost = 3.0f;
+
+bool touches(const std::vector<const NamedValue*>& changed, const NamedValue& named) {
+    return std::find(changed.begin(), changed.end(), &named) != changed.end();
+}
+
+/* A Rate row's value, 0 to 100, as the voices' rate, 0 to 1, kNormalRate
+ * the voice's normal speed. */
+float bridge_rate(const Number& rate) {
+    return rate.value() / 100.0f;
+}
+
+/* The installed voices span more than one language, counting `also`, a
+ * voice's language beside them, when not empty. */
+bool spans_languages(const std::vector<VoiceInfo>& voices, std::string_view also = {}) {
+    if (voices.empty()) {
+        return false;
+    }
+    const std::string& first = voices.front().language;
+    return (!also.empty() && !same_language(also, first)) ||
+           std::any_of(voices.begin(), voices.end(),
+               [&first](const VoiceInfo& voice) { return !same_language(voice.language, first); });
+}
+
+/* A voice as a row shows it: its name, with its language after it when the
+ * voices span more than one. */
+std::string shown_voice(const VoiceInfo& voice, bool languages) {
+    if (!languages || voice.language.empty()) {
+        return voice.name;
+    }
+    return voice.name + ", " + language_name(voice.language);
+}
+
+}  // namespace
+
+ChoiceOptions voice_options(const std::vector<VoiceInfo>& voices) {
+    const bool languages = spans_languages(voices);
+    ChoiceOptions options;
+    for (const VoiceInfo& voice : voices) {
+        options.push_back(
+            ChoiceOption{voice_text(voice.name, voice.language), shown_voice(voice, languages)});
+    }
+    return options;
+}
+
+VoiceSettings::VoiceSettings(
+    ValueModel& model, Speech& speech, const NamedMenu* menu, const VoiceBackend& backend)
+    : m_speech(speech),
+      m_sample_delay(model.group("speech", "Speech")
+              .add_number(NumberSpec{"voice_sample_delay", "Voice sample delay",
+                  "How long a voice waits after a change to its Voice, Rate or Volume row "
+                  "before it plays its sample, so the screen reader's first words come "
+                  "through; a quicker run of changes plays one sample.",
+                  "s", 0.6f, 0.0f, 3.0f, 0.1f})),
+      m_rows{
+          add_rows(model, menu, "your_voice", "Your voice", "your voice",
+              backend.defaults[static_cast<size_t>(Voice::yours)], "what happens to you"),
+          add_rows(model, menu, "opponents_voice", "Opponents' voice", "the opponents' voice",
+              backend.defaults[static_cast<size_t>(Voice::opponents)],
+              "what happens to everyone else, teammates included,"),
+      } {}
+
+VoiceSettings::Rows VoiceSettings::add_rows(ValueModel& model, const NamedMenu* menu,
+    const char* id, const char* title, const char* in_sentence, VoiceDefault default_voice,
+    const char* about) {
+    ValueGroup group = model.group(id, title).in(menu);
+    const std::string name = title;
+    const std::string inside = in_sentence;
+    Choice voice = group.add_choice(ChoiceSpec{
+        .name = "voice",
+        .label = name,
+        .description = std::string("The voice that says ") + about + " in a match.",
+        .default_option = voice_text(default_voice.name, default_voice.language),
+        /* Called only once the rows exist: this is whole by then. */
+        .list = [this] { return m_options; },
+        .fallback = [this](std::string_view saved,
+                        const ChoiceOptions& options) { return fallback(saved, options); },
+        .none = [this] { return none(); },
+        .shown = true,
+    });
+    Number rate = group.add_number(NumberSpec{"rate", name + " rate",
+        "How fast " + inside + " speaks, 50 being the voice's normal speed.", "", 50.0f, 0.0f,
+        100.0f, 5.0f, true});
+    Number volume = group.add_number(NumberSpec{"volume", name + " volume",
+        "The loudness of " + inside + ", under the master volume.", "%", 100.0f, 0.0f, 100.0f, 5.0f,
+        true});
+    /* "Preview opponents' voice", as "Preview gap warning". */
+    std::string lowered = name;
+    lowered[0] = static_cast<char>(std::tolower(static_cast<unsigned char>(lowered[0])));
+    group.add_action(ActionSpec{"preview", "Preview " + lowered,
+        "Says \"" + name + "\" in " + inside + ", at its rate and volume."});
+    Number boost = group.add_number(NumberSpec{"boost", name + " boost",
+        "Lifts " + inside + " under its volume, for a voice that reads quieter than the game.",
+        "times", kVoiceBoost, 1.0f, CueEngine::kMostBoost, 0.1f});
+    return Rows{voice, rate, volume, boost, id, name, std::nullopt};
+}
+
+void VoiceSettings::attach(Voices& voices) {
+    m_voices = &voices;
+    for (int i = 0; i < kVoiceCount; i++) {
+        apply(static_cast<Voice>(i));
+    }
+}
+
+void VoiceSettings::apply(Voice voice) {
+    const Rows& r = rows(voice);
+    m_voices->set_voice(voice, r.voice.saved());
+    m_voices->set_rate(voice, bridge_rate(r.rate));
+    m_voices->set_volume(voice, r.volume.value() / 100.0f * r.boost.value());
+}
+
+void VoiceSettings::changed(const std::vector<const NamedValue*>& changed, Clock::time_point now) {
+    if (m_voices == nullptr) {
+        return; /* the load: attach applies it */
+    }
+    std::vector<Voice> renamed;
+    for (int i = 0; i < kVoiceCount; i++) {
+        const Voice voice = static_cast<Voice>(i);
+        Rows& r = rows(voice);
+        const bool voice_changed = touches(changed, r.voice.named());
+        if (!voice_changed && !touches(changed, r.rate.named()) &&
+            !touches(changed, r.volume.named()) && !touches(changed, r.boost.named()))
+        {
+            continue;
+        }
+        apply(voice);
+        if (voice_changed) {
+            renamed.push_back(voice);
+        }
+        r.sample_at = now + std::chrono::duration_cast<Clock::duration>(
+                                std::chrono::duration<float>(m_sample_delay.value()));
+    }
+    if (m_told == VoicesState::ready) {
+        /* A row lists only voices installed: a hand edit named this one. */
+        const std::string said = missing(renamed);
+        if (!said.empty()) {
+            m_speech.announce(said, Mode::queue);
+        }
+    }
+}
+
+bool VoiceSettings::preview(std::string_view group) {
+    for (int i = 0; i < kVoiceCount; i++) {
+        const Voice voice = static_cast<Voice>(i);
+        if (rows(voice).group == group) {
+            sample(voice);
+            return true;
+        }
+    }
+    return false;
+}
+
+void VoiceSettings::frame(Clock::time_point now, bool launcher) {
+    if (m_voices == nullptr) {
+        return;
+    }
+    const VoicesState state = m_voices->state();
+    if (m_told != state && state == VoicesState::ready) {
+        m_told = state;
+        m_options = voice_options(m_voices->installed());
+        tell(missing({Voice::yours, Voice::opponents}), launcher);
+    } else if (m_told != state && state == VoicesState::unavailable) {
+        m_told = state;
+        tell("Voices unavailable, using the screen reader.", launcher);
+    }
+    for (int i = 0; i < kVoiceCount; i++) {
+        const Voice voice = static_cast<Voice>(i);
+        const Rows& r = rows(voice);
+        if (r.sample_at.has_value() && now >= *r.sample_at) {
+            sample(voice);
+        }
+    }
+}
+
+void VoiceSettings::tell(std::string news, bool launcher) {
+    if (news.empty()) {
+        return;
+    }
+    if (launcher || m_scene_announced) {
+        /* After the proof-of-life, which the voices' start follows. */
+        m_speech.announce(news, Mode::queue);
+    } else {
+        m_news = std::move(news);
+    }
+}
+
+void VoiceSettings::scene_announced() {
+    m_scene_announced = true;
+    if (!m_news.empty()) {
+        m_speech.announce(std::exchange(m_news, {}), Mode::queue);
+    }
+}
+
+void VoiceSettings::sample(Voice voice) {
+    Rows& r = rows(voice);
+    r.sample_at.reset();
+    /* A sample still playing is cut by the new one: the same subject. */
+    m_speech.announce_voice(voice, kPreviewSubject, r.sample);
+}
+
+std::string VoiceSettings::fallback(std::string_view saved, const ChoiceOptions& options) const {
+    /* The options are the installed voices one to one (voice_options), so
+     * the voice find_voice gives is the option at its index, the voice the
+     * worker speaks with. */
+    if (m_voices == nullptr || options.size() != m_voices->installed().size()) {
+        return {};
+    }
+    const int index = find_voice(m_voices->installed(), saved, m_voices->default_index());
+    return index < 0 ? std::string() : options[static_cast<size_t>(index)].text;
+}
+
+std::string VoiceSettings::none() const {
+    switch (m_voices != nullptr ? m_voices->state() : VoicesState::stopped) {
+    case VoicesState::stopped:
+        return "Off";
+    case VoicesState::starting:
+        return "Starting";
+    case VoicesState::ready:
+    case VoicesState::unavailable:
+        break;
+    }
+    return "Unavailable";
+}
+
+std::string VoiceSettings::missing(const std::vector<Voice>& voices) const {
+    /* Each as a row would show it: the voice in use as its row does, the
+     * one missing with its language too where it differs from the voices'
+     * one language. */
+    const std::vector<VoiceInfo>& installed = m_voices->installed();
+    std::vector<std::string> texts;
+    std::vector<std::string> saved;
+    std::vector<std::string> in_use;
+    for (Voice voice : voices) {
+        const std::string& text = rows(voice).voice.saved();
+        if (text.empty() || match_voice(installed, text) >= 0 ||
+            std::find(texts.begin(), texts.end(), text) != texts.end())
+        {
+            continue;
+        }
+        const VoiceInfo missing = parse_voice_text(text);
+        const VoiceInfo* used = m_voices->in_use(voice);
+        texts.push_back(text);
+        saved.push_back(shown_voice(missing, spans_languages(installed, missing.language)));
+        in_use.push_back(
+            used == nullptr ? std::string() : shown_voice(*used, spans_languages(installed)));
+    }
+    if (saved.empty()) {
+        return {};
+    }
+    /* Both fall back to the backend's default voice: one sentence. */
+    if (saved.size() == 2 && in_use[0] == in_use[1]) {
+        return "Voices " + saved[0] + " and " + saved[1] + " not installed, using " + in_use[0] +
+               ".";
+    }
+    std::string said;
+    for (size_t i = 0; i < saved.size(); i++) {
+        if (!said.empty()) {
+            said += " ";
+        }
+        said += "Voice " + saved[i] + " not installed, using " + in_use[i] + ".";
+    }
+    return said;
+}
+
+}  // namespace a11y

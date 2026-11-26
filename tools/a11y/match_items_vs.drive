@@ -1,0 +1,114 @@
+# Items in a VS match through the menus: Fox for player 1 against a CPU
+# raised to level 9, which goes for items, items at Very high from Item
+# Switch in the rules header, Final Destination. The item switch brings an
+# item every few seconds: each is said by name on the screen reader,
+# queued, and played where it comes in (unless Fox is out at the time), and
+# the item's position cue follows the nearest loose one. The run ends once
+# the CPU takes one, said in the opponents' voice with the name alone, as
+# the match has one other player; most runs take 15 to 30 seconds of the
+# match to get there. On the way the CPU often throws a container, which
+# breaks, and its contents are said as new items, a Party Ball's several in
+# one line; the log cannot tell those from the item switch's, so nothing
+# here waits for them. About a minute.
+# Run with the default --scene title, muted, so the cues and the voices run
+# as for a player:
+#   python tools/a11y/drive.py --muted tools/a11y/match_items_vs.drive
+# run_level.py fails it on a line naming an item kind with no name.
+
+# Title screen to the main menu (tools/a11y/main_menu.drive).
+wait "state 0 scene 0$"
+press Start until "boot scene: game mode"
+press A until "boot scene: state 0 scene 1$" 20 0.3
+wait '"Main Menu\. 1-P Mode\. '
+sleep 1
+
+# VS. Mode, Melee.
+press Down
+wait '"VS\. Mode\. '
+press A
+wait '"VS\. Mode\. Melee\. '
+sleep 0.3
+press A
+wait '"Character select\. Player 1, no character\."'
+sleep 1
+
+# Fox for player 1.
+press DUp
+wait ': "Player 1: closed"$'
+press DUp
+wait ': "Holding your coin\. Pichu"$'
+press DUp
+wait ': "Fox"$'
+wait 'glide to "Fox" ended after \d+ frames: arrived'
+press A
+sleep 1
+
+# Player 2 made a CPU, which gets a random character and makes the match
+# ready (tools/a11y/match_time.drive).
+search ': "Player 2: closed"$' DDown*3 DLeft*3 DRight*3
+wait 'glide to "Player 2: closed" ended'
+press A until ': "Player 2: CPU, [^"]+?\. Ready to fight\. Press Start\."$'
+sleep 0.5
+
+# Its CPU level from 1 to 9 on the knob (tools/a11y/css_setup.drive): a
+# level 1 CPU hardly moves, a level 9 one goes for the items.
+search ': "Player 2 CPU level: \d"$' DDown*3 DLeft*5 DRight*7
+wait 'glide to "Player 2 CPU level: \d" ended after \d+ frames: arrived'
+press A
+wait ': "Holding the slider"$'
+press DRight until ': "Level 9"$' 9
+wait 'glide to "Level 9" ended after \d+ frames: arrived'
+press A
+wait ': "Released\. Ready to fight\. Press Start\."$'
+sleep 0.5
+
+# The rules header, Custom Rules and Item Switch, whose frequency strip is
+# Up from its first row: Left twice, from the default Medium to Very high.
+# B twice keeps it and goes back to character select.
+search ': "Rules: 2-minute KO fest!"$' DUp*6 DRight*4 DLeft*8
+wait 'glide to "Rules: 2-minute KO fest!" ended after \d+ frames: arrived'
+press A
+wait ': "Custom Rules\. Rules: Time\. '
+sleep 1
+press Down until ': "Item Switch\. ' 8 0.5
+press A
+wait ': "Item Switch\. Food: on\. '
+sleep 1
+press Up
+wait ': "Item frequency: Medium\. Left and right to adjust\."$'
+press Left
+wait ': "High"$'
+press Left
+wait ': "Very high"$'
+press B
+wait ': "Custom Rules\. Item Switch\. '
+sleep 0.5
+press B
+wait '"Character select\. '
+sleep 1
+
+# Stage select: Final Destination, at the end of the bottom row.
+press Start
+wait '"Stage select\. '
+sleep 1
+press DDown
+wait ': "Icicle Mountain\. '
+search ': "Final Destination\. ' DDown*4 DRight*5
+wait 'glide to "Final Destination" ended after \d+ frames: arrived'
+press A
+
+# The match is under way once your position cue starts.
+wait 'cue your position start ' 60
+
+# The item switch's first item: played where it comes in, then said by
+# name, queued, on the same tick. The item's position cue starts on that
+# tick for a light item, and for a heavy one (a Crate, a Barrel, a Party
+# Ball) only once it has landed, so it is not waited for here.
+wait 'cue item appearance \d play pan -?[\d.]+ pitch [\d.]+ gain 1\.00$' 30
+wait 'speak queue \(muted\): "[A-Z][^"]*"$' 1
+
+# The CPU's first take, in the opponents' voice, the name alone (damage
+# figures, the other voice lines, are digits).
+wait 'voice opponents: "[A-Z][^"]*"$' 100
+wait 'voice opponents plays: "[A-Z][^"]*"' 5
+sleep 1

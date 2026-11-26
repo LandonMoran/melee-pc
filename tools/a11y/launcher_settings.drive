@@ -1,0 +1,145 @@
+# The launcher's Settings: every category and Back, Controls' text entered
+# with Right, read line by line around and left with Escape, a setting
+# stepped both ways and with Enter, a slider moved, the rows wrapping around
+# past the hidden Diagnostics row, Left and Escape back to the categories,
+# the lines between Online's rows,
+# typing in a text field with a refused character, Tab and Shift+Tab, and
+# back to Home both ways. Waits on each announcement, so a missing or changed
+# line fails the run. Run in launcher mode, with accessibility on but muted,
+# which the line reading needs (as run_level.py runs it):
+#   python tools/a11y/drive.py --launcher --muted tools/a11y/launcher_settings.drive
+# The run's settings folder starts from the defaults, so Player name holds
+# PLAYER and the connect code is the run's own. Display mode is never
+# pressed or stepped: fullscreen would take the screen (drive.py refuses it).
+
+wait '"Melee launcher\. Ready to play'
+key Down Down Down
+wait '"Settings, button\. '
+key Return
+wait '"Settings\. Graphics\. Up and down to choose, right to enter\. How the game looks\."$'
+
+# Every category, Controls' text on the way, then Back and round to
+# Graphics.
+key Down
+wait '"Audio\. Volume and reverb\."$'
+key Down
+wait '"Gameplay\. Unlocks, stage hazards and controller fixes\."$'
+key Down
+wait '"Controls\. The keyboard layout and controller setup\."$'
+key Right
+wait '"Keyboard"$'
+key Down
+wait '"WASD, arrows Move"$'
+key Down Down Down Down Down Down Down
+wait '"IJKL C-stick"$'
+key Down
+wait '"Controller"$'
+key Down
+wait '"Remap a gamepad from the in-game menu: press BACK on the pad, or F1, then open Controls\. Controllers are only detected once the game is running\."$'
+key Up
+wait '"Controller"$'
+key Down
+wait '"Remap a gamepad '
+key Down
+wait '"Keyboard"$'
+key Escape
+wait '"Controls\. The keyboard layout and controller setup\."$'
+key Down
+wait '"Online\. Your player name, connect codes and input delay\."$'
+key Down
+wait '"Accessibility\. Speech, steering and the audio cues of Non-Visual Melee\."$'
+key Down
+wait '"Launcher\. The size of these menus, updates and the community\."$'
+key Down
+wait '"Back, button\. Back to the main menu\."$'
+key Down
+wait '"Graphics\. How the game looks\."$'
+
+# Into Graphics' rows. Vertical sync off and on with Right and Left, then
+# with Enter: the new value alone.
+key Right
+wait '"Display mode, Windowed, Left and right to change\. Windowed or fullscreen\."$'
+key Down
+wait '"Vertical sync, On, Left and right to change\. Synchronise presentation with your display\."$'
+key Right
+wait '"Off"$'
+key Left
+wait '"On"$'
+key Return
+wait '"Off"$'
+key Return
+wait '"On"$'
+
+# Internal resolution, a slider: one step up and back.
+key Down
+wait '"Internal resolution, slider, Auto\. Left and right to adjust\. How sharp the game renders\. Auto follows the window size\."$'
+key Right
+wait '"1x"$'
+key Left
+wait '"Auto"$'
+key Escape
+wait '"Graphics\. How the game looks\."$'
+
+# Launcher's rows: Up from the first wraps to the last shown, past
+# Diagnostics, which only Android shows; Left on a button goes back.
+key Up Up
+wait '"Launcher\. '
+key Right
+wait '"Interface size, slider, 100%\. Left and right to adjust\. The size of these menus\."$'
+key Up
+wait '"Discord community: Join Discord, button\. Join the community Discord server in your browser\."$'
+key Left
+wait '"Launcher\. '
+
+# Online: Player name, typed into with the cursor at the field's start. #
+# is refused, letters go in as capitals, and a full field says so;
+# Backspace puts PLAYER back. Up twice from Launcher, past Accessibility.
+key Up Up
+wait '"Online\. '
+key Right
+wait '"Player name, edit, PLAYER\. 1-8 letters or digits\. Changes apply to the next search\."$'
+type "#ab1"
+wait '"# not allowed"$'
+wait '"APLAYER"$'
+wait '"ABPLAYER"$'
+wait '"Full, 8 characters at most"$'
+key Backspace
+wait '"APLAYER"$'
+key Backspace
+wait '"PLAYER"$'
+
+# The lines between Online's rows, read in their turn, and round to the
+# first row.
+key Down
+wait '"Your connect code, PLAYER#\w+"$'
+key Down
+wait "\"Friend's connect code, edit, blank\. Leave blank to host your code\. Open Online, then Direct Connect, in the game\.\"$"
+key Down
+wait '"Input delay, Auto, Left and right to change\. Automatic adapts to your connection\. Changes apply next match\."$'
+key Down
+wait '"Internet discovery can take a few minutes\. Some home networks cannot connect without a relay\."$'
+key Down
+wait '"Player name, edit, PLAYER\. '
+
+# Tab and Shift+Tab follow the same order.
+key Shift+Tab
+wait '"Internet discovery can take '
+key Tab
+wait '"Player name, edit, PLAYER\. '
+
+# Off the field (which keeps Escape), then Escape twice: the category, then
+# Home.
+key Up Up
+wait '"Input delay, Auto, '
+key Escape
+wait '"Online\. '
+key Escape
+wait '"Settings, button\. '
+
+# Settings again opens on Online; Back returns Home.
+key Return
+wait '"Settings\. Online\. Up and down to choose, right to enter\. '
+key Down Down Down
+wait '"Back, button\. '
+key Return
+wait '"Settings, button\. '
