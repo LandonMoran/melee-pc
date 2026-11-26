@@ -68,6 +68,24 @@ A gamepad is required to play with speech: the on-screen overlay is drawn for
 sighted players. [ACCESSIBILITY.md](../../ACCESSIBILITY.md#android) has the
 player-facing guide.
 
+## Choosing the disc with a screen reader
+
+The launcher is an RmlUi page drawn on the SDL surface, so Android's screen
+reader cannot read it and only a sighted tap can move its focus. Before the
+launcher runs, Android therefore shows a small native dialog instead — read by
+TalkBack like any other Android menu — with **Start**, **Choose disc image** and
+**Launcher**:
+
+- **Choose disc image** opens Android's own document picker; pick your image
+  and the dialog says which one it took. The grant is persisted, so the next
+  launch offers the same image again.
+- **Start** boots that image straight in, skipping the launcher. From then on
+  the fork's own speech reads the game and the F1 menu, as on every platform.
+- **Launcher** opens the desktop launcher for anyone who wants it (graphics,
+  verification, updates).
+
+So disc choice needs no sight at all: one dialog, one picker, then speech.
+
 ## Performance settings
 
 Use **Settings > Graphics > Performance preset > Apply** for 1x rendering,

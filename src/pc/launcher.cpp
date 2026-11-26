@@ -1420,6 +1420,13 @@ static std::filesystem::path pc_resources_path() {
 #endif
 }
 
+/* The image launcher.cfg remembers, for Android's startup disc menu
+ * (src/pc/main.c): it offers a returning player a one-tap Start instead of
+ * sending them into a launcher a screen reader cannot read. */
+extern "C" const char* pc_launcher_saved_disc(void) {
+    return prefs.disc.c_str();
+}
+
 extern "C" int pc_launcher_run(const char* command_line_disc, SDL_Window* window) {
     try {
         std::string error;

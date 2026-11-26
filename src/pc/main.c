@@ -693,6 +693,18 @@ MELEE_EXPORT int main(int argc, char* argv[]) {
      * sits on top of it: leave the overlay inert until the game itself is
      * running, or it eats the taps meant for the disc picker. */
     pc_android_set_launcher_active(true);
+    /* Android: the launcher is an RmlUi page on the SDL surface, which a
+     * screen reader cannot read and a sighted tap is the only way to drive.
+     * A native dialog offers the disc first instead -- one option, read by
+     * TalkBack -- and the image it returns boots straight in, because
+     * pc_launcher_run auto-plays a disc it was given. Declining it, or every
+     * platform without the dialog, falls through to the launcher unchanged. */
+    char android_disc[4096];
+    if (disc == NULL &&
+        pc_android_startup_disc(pc_launcher_saved_disc(), android_disc, sizeof android_disc))
+    {
+        disc = android_disc;
+    }
     const int launched = pc_launcher_run(disc, info.window);
     if (launched != 1)
         return launched == 0 ? 0 : 1;

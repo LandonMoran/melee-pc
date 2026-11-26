@@ -26,6 +26,155 @@ public class MeleeActivity extends SDLActivity {
     }
 
     private static final int EXPORT_LOGS_REQUEST = 7124;
+    private static final int DISC_PICK_REQUEST = 7125;
+
+    /* The startup disc menu, called from native before the launcher runs
+     * (src/pc/android_compat.cpp, pc_android_startup_disc). The launcher is an
+     * RmlUi page drawn on the SDL surface: TalkBack cannot read it and only a
+     * sighted tap can move its focus, so on a phone the disc is chosen here,
+     * in a real dialog that Android's own accessibility already reads. The
+     * game's speech takes over as soon as it boots. */
+    private final Object mDiscMenuLock = new Object();
+    private boolean mDiscMenuDone;
+    private String mDiscMenuChoice;
+    private String mDiscMenuSaved = "";
+    private android.app.AlertDialog mDiscMenu;
+    private android.net.Uri mDiscMenuPicked;
+    private volatile long mDiscMenuShownAt;
+
+    /* Runs on the native thread and blocks it until the dialog is answered:
+     * the launcher must not draw underneath it. Returns the image to boot, or
+     * null to fall through to the launcher. */
+    public String showStartupDiscMenu(String savedDisc) {
+        final String saved = savedDisc == null ? "" : savedDisc;
+        synchronized (mDiscMenuLock) {
+            mDiscMenuSaved = saved;
+            mDiscMenuPicked = null;
+            mDiscMenuChoice = null;
+            mDiscMenuShownAt = 0;
+            mDiscMenuDone = false;
+        }
+        runOnUiThread(() -> {
+            try {
+                showStartupDiscDialog();
+            } catch (Exception e) {
+                /* No dialog (a finishing activity, say): behave as Launcher. */
+                finishStartupDiscMenu(null);
+            }
+        });
+        final long postedAt = System.currentTimeMillis();
+        synchronized (mDiscMenuLock) {
+            while (!mDiscMenuDone) {
+                /* Never wait forever on a dialog that never appeared. */
+                if (mDiscMenuShownAt == 0 && System.currentTimeMillis() - postedAt > 20000) {
+                    mDiscMenuChoice = null;
+                    break;
+                }
+                try {
+                    mDiscMenuLock.wait(1000);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    break;
+                }
+            }
+            return mDiscMenuChoice;
+        }
+    }
+
+    private void showStartupDiscDialog() {
+        mDiscMenu = new android.app.AlertDialog.Builder(this)
+            .setTitle("Melee PC")
+            .setMessage(startupDiscMessage())
+            .setPositiveButton("Start", (d, w) -> finishStartupDiscMenu(startupDiscChoice()))
+            .setNeutralButton("Choose disc image", null)
+            .setNegativeButton("Launcher", (d, w) -> finishStartupDiscMenu(null))
+            .setOnCancelListener(d -> finishStartupDiscMenu(null))
+            .create();
+        mDiscMenu.show();
+        mDiscMenuShownAt = System.currentTimeMillis();
+        mDiscMenu.getButton(android.app.AlertDialog.BUTTON_POSITIVE)
+            .setEnabled(!mDiscMenuSaved.isEmpty());
+        /* A neutral button dismisses by default: this one opens the picker and
+         * leaves the dialog up, so the image can be checked before Start. */
+        mDiscMenu.getButton(android.app.AlertDialog.BUTTON_NEUTRAL)
+            .setOnClickListener(v -> startDiscPicker());
+    }
+
+    private String startupDiscChoice() {
+        if (mDiscMenuPicked != null) {
+            return mDiscMenuPicked.toString();
+        }
+        return mDiscMenuSaved.isEmpty() ? null : mDiscMenuSaved;
+    }
+
+    private String startupDiscMessage() {
+        String name = "";
+        if (mDiscMenuPicked != null) {
+            String segment = mDiscMenuPicked.getLastPathSegment();
+            name = segment != null ? segment : mDiscMenuPicked.toString();
+        } else if (!mDiscMenuSaved.isEmpty()) {
+            try {
+                String segment = android.net.Uri.parse(mDiscMenuSaved).getLastPathSegment();
+                name = segment != null ? segment : mDiscMenuSaved;
+            } catch (Exception e) {
+                name = mDiscMenuSaved;
+            }
+        }
+        if (name.isEmpty()) {
+            return "No disc image chosen yet. Choose your Melee USA revision 2 image "
+                + "(GALE01: .iso, .gcm, .ciso, .rvz, .gcz or .wia) to start.";
+        }
+        return "Disc image: " + name
+            + "\n\nThe game speaks from here. Press Start to boot it.";
+    }
+
+    private void startDiscPicker() {
+        android.content.Intent intent = new android.content.Intent(
+            android.content.Intent.ACTION_OPEN_DOCUMENT);
+        intent.addCategory(android.content.Intent.CATEGORY_OPENABLE);
+        intent.setType("*/*");
+        intent.addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION
+            | android.content.Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
+        try {
+            startActivityForResult(intent, DISC_PICK_REQUEST);
+        } catch (android.content.ActivityNotFoundException e) {
+            android.widget.Toast.makeText(this, "No file picker is available.",
+                android.widget.Toast.LENGTH_LONG).show();
+        }
+    }
+
+    /* The picker's grant lasts for this session, so keep it: the next launch
+     * offers the same image as a one-tap Start. */
+    private void finishedDiscPick(android.content.Intent data) {
+        final android.net.Uri uri = data.getData();
+        if (uri == null) {
+            return;
+        }
+        try {
+            getContentResolver().takePersistableUriPermission(uri,
+                android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        } catch (Exception ignored) {
+        }
+        mDiscMenuPicked = uri;
+        if (mDiscMenu != null) {
+            mDiscMenu.setMessage(startupDiscMessage());
+            mDiscMenu.getButton(android.app.AlertDialog.BUTTON_POSITIVE).setEnabled(true);
+        }
+    }
+
+    private void finishStartupDiscMenu(String choice) {
+        synchronized (mDiscMenuLock) {
+            if (mDiscMenuDone) {
+                return;
+            }
+            mDiscMenuChoice = choice;
+            mDiscMenuDone = true;
+            mDiscMenuLock.notifyAll();
+        }
+        if (mDiscMenu != null && mDiscMenu.isShowing()) {
+            mDiscMenu.dismiss();
+        }
+    }
 
     public void exportLogs() {
         runOnUiThread(() -> {
@@ -46,6 +195,12 @@ public class MeleeActivity extends SDLActivity {
     @Override
     protected void onActivityResult(int requestCode, int resultCode, android.content.Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode == DISC_PICK_REQUEST) {
+            if (resultCode == RESULT_OK && data != null) {
+                finishedDiscPick(data);
+            }
+            return;
+        }
         if (requestCode != EXPORT_LOGS_REQUEST || resultCode != RESULT_OK || data == null ||
                 data.getData() == null) {
             return;

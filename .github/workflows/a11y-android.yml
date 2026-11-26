@@ -8,11 +8,11 @@ name: Build Android APK (accessibility fork)
 on:
   workflow_dispatch:
   # GitHub only lets the REST API dispatch a workflow that already exists on
-  # the default branch, so until this file lands on master the only way to run
-  # it is to change it. This makes such a change build and publish once.
+  # the default branch, so until this file lands on master a push is the only
+  # way to run it. Every push to this branch therefore rebuilds the APK and
+  # replaces the preview release's asset, keeping that release on the tip.
   push:
     branches: [a11y-android]
-    paths: ['.github/workflows/a11y-android.yml']
 
 permissions:
   contents: write

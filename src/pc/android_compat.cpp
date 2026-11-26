@@ -269,6 +269,46 @@ void pc_android_set_launcher_active(bool active) {
     env->DeleteLocalRef(activity);
 }
 
+/* MeleeActivity.showStartupDiscMenu (Ljava/lang/String;)Ljava/lang/String;
+ * shows the startup disc dialog on the UI thread and returns the image the
+ * player chose, or null for the launcher. It blocks this thread until then,
+ * which is the point: the launcher must not run while a dialog is over it. */
+bool pc_android_startup_disc(const char* saved_disc, char* out, size_t cap) {
+    if (out == nullptr || cap == 0) {
+        return false;
+    }
+    out[0] = '\0';
+    JNIEnv* env = (JNIEnv*)SDL_GetAndroidJNIEnv();
+    if (env == nullptr || env->PushLocalFrame(16) != JNI_OK) {
+        return false;
+    }
+    jobject activity = (jobject)SDL_GetAndroidActivity();
+    jclass cls = activity != nullptr ? env->GetObjectClass(activity) : nullptr;
+    jmethodID method = cls != nullptr ?
+                           env->GetMethodID(cls,
+                               "showStartupDiscMenu", "(Ljava/lang/String;)Ljava/lang/String;") :
+                           nullptr;
+    if (method != nullptr) {
+        jobject saved = env->NewStringUTF(saved_disc != nullptr ? saved_disc : "");
+        if (saved != nullptr) {
+            jobject choice = env->CallObjectMethod(activity, method, saved);
+            if (!threw(env, "showStartupDiscMenu") && choice != nullptr) {
+                const char* utf = env->GetStringUTFChars((jstring)choice, nullptr);
+                if (utf != nullptr) {
+                    snprintf(out, cap, "%s", utf);
+                    env->ReleaseStringUTFChars((jstring)choice, utf);
+                }
+            }
+        }
+    }
+    env->PopLocalFrame(nullptr);
+    if (out[0] == '\0') {
+        return false;
+    }
+    pc_log_line("disc: chosen in the Android startup menu");
+    return true;
+}
+
 void pc_android_export_logs(void) {
     JNIEnv* env = (JNIEnv*)SDL_GetAndroidJNIEnv();
     if (env == nullptr || env->PushLocalFrame(8) != JNI_OK)
@@ -380,6 +420,14 @@ void pc_android_multicast_lock_release(void) {}
 
 void pc_android_set_launcher_active(bool active) {
     (void)active;
+}
+
+/* Not Android: the launcher is the only disc menu, as it always was. */
+bool pc_android_startup_disc(const char* saved_disc, char* out, size_t cap) {
+    (void)saved_disc;
+    (void)out;
+    (void)cap;
+    return false;
 }
 
 const char* pc_android_device_name(void) {
