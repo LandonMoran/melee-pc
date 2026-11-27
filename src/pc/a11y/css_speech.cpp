@@ -1,0 +1,547 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
+#include "css_speech.hpp"
+#include "css_names.hpp"
+#include "sentences.hpp"
+#include "speech.hpp"
+#include <cctype>
+#include <initializer_list>
+#include <optional>
+#include <string_view>
+
+namespace a11y {
+namespace {
+
+/* The words with their first letter made a capital: "No character". */
+std::string capitalised(std::string_view words) {
+    std::string out(words);
+    if (!out.empty()) {
+        out[0] = static_cast<char>(std::toupper(static_cast<unsigned char>(out[0])));
+    }
+    return out;
+}
+
+/* Appends a clause to a target's words: "Teams: off, not available while
+ * holding a coin", or after words that end a sentence, as its own: "Rules:
+ * 2-minute KO fest! Not available while holding a coin". */
+void add_clause(std::string& words, std::string_view clause) {
+    words += ends_sentence(words) ? " " + capitalised(clause) : ", " + std::string(clause);
+}
+
+/* "Player 2" for player number 1, as the hand's badge shows "P2". */
+std::string player(int number) {
+    return std::string(kPlayer) + " " + std::to_string(number + 1);
+}
+
+/* Whose a player slot is: in VS modes slot 1 is player 2's, as its tab shows
+ * "P2"; in single-player modes the first is the player who started the mode
+ * and Training's second the CPU's. */
+std::string slot_name(const A11yCssState& state, int slot) {
+    if (single_player(state)) {
+        return slot == state.local_slot ? player(state.local_player) : std::string(kCpu);
+    }
+    return player(slot);
+}
+
+std::string team(int number) {
+    std::optional<std::string_view> word = team_word(number);
+    return word ? std::string(*word) : std::string(kTeam) + " " + std::to_string(number + 1);
+}
+
+/* The character a slot shows as chosen: its coin at rest on a portrait. A
+ * slot not yet opened, or one whose coin went back, may keep a stale one, and
+ * a carried coin keeps the choice it came from. */
+A11yCharacter chosen(const A11yCssSlot& slot) {
+    return slot.kind != A11Y_CSS_CLOSED && !slot.carried && slot.portrait >= 0 ? slot.character :
+                                                                                 A11Y_NO_CHARACTER;
+}
+
+/* "Player 2: CPU". */
+std::string slot_kind(const A11yCssState& state, int slot) {
+    return slot_name(state, slot) + ": " + std::string(slot_kind_word(state.slots[slot].kind));
+}
+
+/* The coin of a slot by whose it is: "your coin", "player 2's coin", and in
+ * Training "the CPU's coin". */
+std::string coin_words(const A11yCssState& state, int coin) {
+    if (coin == state.local_slot) {
+        return std::string(kYourCoin);
+    }
+    if (single_player(state)) {
+        return std::string(kCpusCoin);
+    }
+    return std::string(kPlayersCoinBefore) + std::to_string(coin + 1) +
+           std::string(kPlayersCoinAfter);
+}
+
+/* The coins resting on a portrait, the one a free hand would pick up first:
+ * "your coin, also player 2's coin"; without one, "player 3's coin". Empty
+ * when none rests there. */
+std::string resting_words(const A11yCssState& state, int portrait, std::optional<int> coin) {
+    std::string out = coin ? coin_words(state, *coin) : "";
+    std::string others;
+    for (int other : resting_coins(state, portrait)) {
+        if (other != coin) {
+            add_part(others, coin_words(state, other));
+        }
+    }
+    if (coin && !others.empty()) {
+        others = std::string(kAlso) + " " + others;
+    }
+    add_part(out, others);
+    return out;
+}
+
+/* A single-player mode's difficulty as the arrows' strip shows it:
+ * "Normal". */
+std::string difficulty(int value) {
+    std::optional<std::string_view> word = difficulty_word(value);
+    return word ? std::string(*word) : std::string(kDifficultyArrows) + " " + std::to_string(value);
+}
+
+/* A row of arrows' words: its name, its value as the strip shows it
+ * ("Normal", "3"), and the ways of its lower and higher arrows. */
+struct ArrowRowWords {
+    std::string_view name;
+    std::string value;
+    std::string_view lower;
+    std::string_view higher;
+};
+
+ArrowRowWords arrow_row_words(const A11yCssState& state, ArrowRow row) {
+    int value = (state.arrows.*row).value;
+    return row == &A11yCssArrows::stocks ?
+               ArrowRowWords{kStockArrows, std::to_string(value), kFewer, kMore} :
+               ArrowRowWords{kDifficultyArrows, difficulty(value), kLower, kHigher};
+}
+
+/* A slider's words: its name at its knob, and the shorter word said before
+ * its value while it is held. */
+struct SliderWords {
+    std::string_view name;
+    std::string_view held_word;
+};
+
+SliderWords slider_words(const SliderKind& slider) {
+    return slider.slider == A11Y_CSS_CPU_LEVEL ? SliderWords{kCpuLevelSlider, kCpuLevelHeld} :
+                                                 SliderWords{kHandicapSlider, kHandicapHeld};
+}
+
+/* The local player's coin will jump into their free hand as it enters the
+ * portraits: the game puts it there while the slot has no portrait chosen
+ * (mnCharSel_CursorThink, opening a closed slot first). Camera mode's fourth
+ * player never gets one. */
+bool coin_jumps_in(const A11yCssState& state) {
+    bool camera_fourth = state.match_type == A11Y_CSS_VS_CAMERA && state.local_slot == 3;
+    return state.hand.present && state.hand.coin < 0 && state.hand.slider == A11Y_CSS_NO_SLIDER &&
+           state.slots[state.local_slot].portrait < 0 && !camera_fourth;
+}
+
+/* What the local hand is on, for hover announcements: the slider it holds,
+ * or the button or knob under a free hand. A free hand over a portrait is
+ * silent, and a carried coin speaks for itself. */
+Target hovered(const A11yCssState& state) {
+    const A11yCssHand& hand = state.hand;
+    if (!hand.present || hand.coin >= 0) {
+        return Target{};
+    }
+    if (const SliderKind* held = slider_kind(hand.slider)) {
+        return Target{held->knob_kind, hand.slider_slot};
+    }
+    Target target = target_at(state, hand.x, hand.y);
+    return target.kind == TargetKind::portrait ? Target{} : target;
+}
+
+/* What the local hand is on, for a glide's end: the value of a held slider,
+ * the portrait under a carried coin, or else what hovered() says. */
+Target under_hand(const A11yCssState& state) {
+    if (state.hand.present && state.hand.slider != A11Y_CSS_NO_SLIDER) {
+        return locate(state, state.hand.x, state.hand.y);
+    }
+    if (state.hand.present && state.hand.coin >= 0) {
+        int over = state.slots[state.hand.coin].over_portrait;
+        return over >= 0 ? Target{TargetKind::portrait, over} : Target{};
+    }
+    return hovered(state);
+}
+
+}  // namespace
+
+void CssSpeech::frame(const A11yCssState& state, const GlideStatus& glide) {
+    /* Leaving the rules screen or name entry builds the screen afresh inside
+     * the same scene: an arrival too. */
+    bool arrived = !m_seen || (m_last.exit == A11Y_CSS_AWAY && state.exit != A11Y_CSS_AWAY);
+    A11yCssState last = m_last;
+    m_seen = true;
+    m_last = state;
+    if (arrived) {
+        m_pickup_pending = false;
+        m_speech.announce(opening(state), Mode::interrupt);
+        return;
+    }
+    /* Name entry opens inside this scene. So do the rules screens, which
+     * the menu reader speaks for (hooks.cpp). */
+    if (state.exit != last.exit && state.exit == A11Y_CSS_TO_NAME_ENTRY) {
+        std::string out(kNameEntryScreen);
+        add_sentence(out, kNoSpeechYet);
+        m_speech.announce(out, Mode::interrupt);
+    }
+    if (state.exit != A11Y_CSS_STAYING) {
+        return;
+    }
+
+    /* During a glide, and on the frame it has ended, what the hand crosses
+     * goes unsaid: the step said where it goes. */
+    bool gliding = glide.phase == GlideStatus::Phase::gliding;
+    bool glide_ended =
+        glide.phase == GlideStatus::Phase::ended || glide.phase == GlideStatus::Phase::failed;
+    bool quiet = gliding || glide_ended;
+
+    std::string mine;
+    std::string others;
+    add_sentence(mine, coin_announcement(last, state, quiet));
+    /* Cleared after the coin's announcement, which may be the pickup seen on
+     * the glide's last frame, said a frame later. */
+    if (glide.phase == GlideStatus::Phase::none) {
+        m_drop_said = false;
+        m_pickup_said = false;
+    }
+    add_sentence(mine, slider_announcement(last, state, quiet));
+    Target was = hovered(last);
+    Target is = hovered(state);
+    add_sentence(mine, arrow_announcement(last, state, is));
+    slot_announcements(last, state, was, is, mine, others);
+    if (glide_ended) {
+        if (glide.phase == GlideStatus::Phase::failed) {
+            add_sentence(
+                mine, std::string(kCouldNotReach) + " " + target_words(state, glide.destination));
+        }
+        Target under = under_hand(state);
+        if (under != glide.destination && under.kind != TargetKind::none) {
+            add_sentence(mine, target_words(state, under));
+        }
+    } else if (!quiet && is != was && is.kind != TargetKind::none) {
+        add_sentence(mine, target_words(state, is));
+    }
+    if (state.slots[state.local_slot].name_tags_open &&
+        !last.slots[state.local_slot].name_tags_open)
+    {
+        add_sentence(mine, kNameTagsWindow);
+        add_sentence(mine, kNoSpeechYet);
+    }
+    if (state.ready && !last.ready) {
+        /* After whoever made it ready. */
+        add_sentence(mine.empty() && !others.empty() ? others : mine, kReadyToFight);
+    }
+    if (!mine.empty()) {
+        /* Behind the step's announcement while the glide runs. */
+        m_speech.announce(mine, gliding ? Mode::queue : Mode::interrupt);
+    }
+    if (!others.empty()) {
+        m_speech.announce(others, Mode::queue);
+    }
+}
+
+void CssSpeech::step(const A11yCssState& state, Target from, Target to) {
+    m_drop_said = false;
+    m_pickup_said = false;
+    if (to.kind == TargetKind::none) {
+        m_speech.announce(kNothingThatWay, Mode::interrupt);
+        return;
+    }
+    std::string out;
+    std::string words = target_words(state, to);
+    int carrying = state.hand.coin;
+    if (carrying >= 0 && area(to) == Area::player_slots) {
+        /* The coin goes back as the hand leaves the portraits, before it
+         * gets there; said now, and not again as it happens. The button of
+         * the slot the coin belongs to leaves the character to the drop's
+         * words, when they name one: the coin is still in the hand, so the
+         * slot has none chosen yet. */
+        std::string drop = drop_words(state, carrying);
+        add_sentence(out, drop);
+        m_drop_said = true;
+        if (!drop.empty() && to == Target{TargetKind::slot_button, carrying}) {
+            words = slot_kind(state, carrying);
+        }
+    } else if (carrying >= 0 && area(to) == Area::top_bar) {
+        add_clause(words, kNotAvailableWhileHoldingACoin);
+    } else if (to.kind == TargetKind::portrait && coin_jumps_in(state)) {
+        /* The coin jumps into the hand as it reaches the portraits, before
+         * it gets there; said now, ahead of the portrait, and not again as
+         * it happens. */
+        add_sentence(out, holding(state, state.local_slot, true));
+        m_pickup_said = true;
+    } else if (to.coin && from.kind == TargetKind::portrait && from.index == to.index && from != to)
+    {
+        /* From coin to coin on one portrait: only the coin changed. */
+        words = coin_words(state, *to.coin);
+    }
+    add_sentence(out, words);
+    m_speech.announce(out, Mode::interrupt);
+}
+
+std::string CssSpeech::opening(const A11yCssState& state) {
+    std::optional<std::string_view> mode =
+        single_player(state) ? mode_name(state.match_type) : std::nullopt;
+    std::string out =
+        mode ? std::string(*mode) + " " + std::string(kModeScreenName) : std::string(kScreenName);
+    /* The player, and in Training the CPU they choose for too. */
+    for (int i = 0; i < A11Y_CSS_SLOTS; i++) {
+        bool own = i == state.local_slot;
+        if (own || (single_player(state) && i < state.slot_count)) {
+            out += ". " + slot_name(state, i) + ", " + chosen_words(state.slots[i]);
+        }
+    }
+    out += ".";
+    if (single_player(state) && state.local_port != 0) {
+        out += " " + std::string(kSteeringNeedsPort1);
+    }
+    return out;
+}
+
+std::string CssSpeech::arrow_announcement(
+    const A11yCssState& last, const A11yCssState& now, Target is) {
+    /* Only the local hand changes them: its A on an arrow. */
+    for (ArrowRow row : {&A11yCssArrows::difficulty, &A11yCssArrows::stocks}) {
+        const A11yCssArrowRow& before = last.arrows.*row;
+        const A11yCssArrowRow& after = now.arrows.*row;
+        if (after.shown && before.shown && after.value != before.value) {
+            return arrow_row_words(now, row).value;
+        }
+    }
+    /* At the end of the range the game does nothing; the value again says
+     * the press was heard. Elsewhere the value changes next frame. */
+    if (now.pressed_a && is.kind == TargetKind::arrow && arrow_at_end(now, is)) {
+        return arrow_row_words(now, arrow_kind(is).row).value;
+    }
+    return "";
+}
+
+std::string CssSpeech::coin_announcement(
+    const A11yCssState& last, const A11yCssState& now, bool quiet) {
+    int was_carrying = last.hand.coin;
+    int carrying = now.hand.coin;
+    if (carrying >= 0 && carrying != was_carrying) {
+        /* The frame a coin is picked up still shows where it lay; where it
+         * is now, under the hand, shows a frame later. Speaking at once
+         * would have that portrait cut the pickup off. */
+        m_pickup_pending = true;
+        return "";
+    }
+    bool pickup_pending = m_pickup_pending;
+    m_pickup_pending = false;
+    if (pickup_pending && carrying >= 0) {
+        bool said = m_pickup_said && carrying == now.local_slot;
+        m_pickup_said = false;
+        return said ? "" : holding(now, carrying, quiet);
+    }
+    if (was_carrying >= 0 && carrying < 0) {
+        bool said = m_drop_said;
+        m_drop_said = false;
+        return said ? "" : dropped(last, now, was_carrying);
+    }
+    /* X and Y change the costume of the carried coin, or of one's own. */
+    int slot = carrying >= 0 ? carrying : now.local_slot;
+    const A11yCssSlot& before = last.slots[slot];
+    const A11yCssSlot& after = now.slots[slot];
+    if (carrying >= 0 && after.over_portrait != before.over_portrait) {
+        /* Leaving every portrait says nothing. Entering one also resets the
+         * costume, which goes unsaid. */
+        return after.over_portrait >= 0 && !quiet ?
+                   target_words(now, Target{TargetKind::portrait, after.over_portrait}) :
+                   "";
+    }
+    if (after.over_portrait >= 0 && after.over_portrait == before.over_portrait &&
+        after.portrait == before.portrait && after.character == before.character &&
+        after.costume != before.costume)
+    {
+        return std::string(kCostume) + " " + std::to_string(after.costume + 1);
+    }
+    return "";
+}
+
+std::string CssSpeech::holding(const A11yCssState& now, int coin, bool quiet) {
+    std::string out = std::string(kHolding) + " " + coin_words(now, coin);
+    int over = now.slots[coin].over_portrait;
+    if (over >= 0 && !quiet) {
+        add_sentence(out, target_words(now, Target{TargetKind::portrait, over}));
+    }
+    return out;
+}
+
+std::string CssSpeech::dropped(const A11yCssState& last, const A11yCssState& now, int coin) {
+    const A11yCssSlot& before = last.slots[coin];
+    const A11yCssSlot& after = now.slots[coin];
+    /* Carried down into the player slots. */
+    if (after.portrait < 0 || after.character == A11Y_NO_CHARACTER) {
+        return capitalised(kNoCharacter);
+    }
+    /* B puts the coin back on the character chosen before, which A cannot
+     * do: A chooses the portrait under the coin, and a different portrait is
+     * a different character. */
+    if (after.character == before.character && after.portrait != before.over_portrait) {
+        return std::string(kBackTo) + " " + name(after.character);
+    }
+    /* A choice: the game's announcer names the character. */
+    return "";
+}
+
+std::string CssSpeech::drop_words(const A11yCssState& state, int coin) {
+    /* Carried down, one's own coin clears the character (the game does so
+     * for the hand's own slot); any other goes back to the character it came
+     * from. */
+    if (coin == state.local_slot) {
+        return capitalised(kNoCharacter);
+    }
+    A11yCharacter character = state.slots[coin].character;
+    return character != A11Y_NO_CHARACTER ? std::string(kBackTo) + " " + name(character) : "";
+}
+
+std::string CssSpeech::slider_announcement(
+    const A11yCssState& last, const A11yCssState& now, bool quiet) {
+    const A11yCssHand& before = last.hand;
+    const A11yCssHand& after = now.hand;
+    std::string out;
+    /* The value moves with the hand, and may move on the frame A lets go.
+     * During a glide the step has said the value it goes to. */
+    const SliderKind* held = slider_kind(before.slider);
+    if (held != nullptr && !quiet) {
+        int was = last.slots[before.slider_slot].*held->value;
+        int is = now.slots[before.slider_slot].*held->value;
+        if (is != was) {
+            add_sentence(
+                out, std::string(slider_words(*held).held_word) + " " + std::to_string(is));
+        }
+    }
+    if (after.slider != A11Y_CSS_NO_SLIDER && before.slider == A11Y_CSS_NO_SLIDER) {
+        add_sentence(out, kHoldingSlider);
+    } else if (after.slider == A11Y_CSS_NO_SLIDER && before.slider != A11Y_CSS_NO_SLIDER) {
+        add_sentence(out, kReleased);
+    }
+    return out;
+}
+
+void CssSpeech::slot_announcements(const A11yCssState& last, const A11yCssState& now, Target was,
+    Target is, std::string& mine, std::string& others) {
+    /* A change is the local hand's when the hand is on the button that makes
+     * it, or holds the slot's coin or slider; any other is another
+     * player's, spoken only online; another hand's change to the local
+     * player's own slot kind is spoken as the local hand's, offline too. */
+    auto on = [&](TargetKind kind, int slot) {
+        return was == Target{kind, slot} || is == Target{kind, slot};
+    };
+    auto holds = [&](int slot) {
+        return last.hand.coin == slot || now.hand.coin == slot || last.hand.slider_slot == slot ||
+               now.hand.slider_slot == slot;
+    };
+    std::string theirs;
+    for (int i = 0; i < A11Y_CSS_SLOTS; i++) {
+        const A11yCssSlot& before = last.slots[i];
+        const A11yCssSlot& after = now.slots[i];
+        bool own = i == now.local_slot;
+        if (after.kind != before.kind) {
+            /* The local player's own slot also opens as their hand first
+             * reaches the portraits, its coin jumping into the hand on the
+             * same frame, which "Holding your coin" says. No button changes a
+             * slot whose coin or slider is in a hand, so this is never the
+             * hand's press, even fresh from the slot's button. */
+            if (holds(i)) {
+                continue;
+            }
+            /* Another hand's press on the local player's button, or their
+             * controller coming out, is said as the local player's own
+             * press, offline too: losing one's slot matters more than the
+             * rest. */
+            add_sentence(
+                (on(TargetKind::slot_button, i) || own) ? mine : theirs, slot_words(now, i));
+            continue;
+        }
+        if (now.teams && last.teams && after.team != before.team) {
+            std::string colour = team(after.team);
+            if (on(TargetKind::team_button, i)) {
+                add_sentence(mine, capitalised(colour) + " " + std::string(kTeam));
+            } else {
+                add_sentence(theirs, slot_name(now, i) + " " + std::string(kTeam) + ": " + colour);
+            }
+        }
+        /* The local hand's choices, for itself or a CPU, are left to the
+         * game's announcer. */
+        A11yCharacter character = chosen(after);
+        if (!own && !holds(i) && character != A11Y_NO_CHARACTER && character != chosen(before)) {
+            add_sentence(theirs, slot_name(now, i) + ": " + name(character));
+        }
+    }
+    if (now.teams != last.teams) {
+        std::string words = target_words(now, Target{TargetKind::teams});
+        add_sentence(on(TargetKind::teams, -1) ? mine : theirs, words);
+    }
+    if (now.online) {
+        add_sentence(others, theirs);
+    }
+}
+
+std::string CssSpeech::target_words(const A11yCssState& state, Target target) {
+    int i = target.index;
+    switch (target.kind) {
+    case TargetKind::none:
+        break;
+    case TargetKind::portrait: {
+        std::string out = name(state.portraits[i].character);
+        add_part(out, resting_words(state, i, target.coin));
+        return out;
+    }
+    case TargetKind::slot_button:
+        return slot_words(state, i);
+    case TargetKind::team_button:
+        return slot_name(state, i) + " " + std::string(kTeam) + ": " + team(state.slots[i].team);
+    case TargetKind::cpu_level:
+    case TargetKind::handicap: {
+        const SliderKind* slider = slider_kind(target.kind);
+        SliderWords words = slider_words(*slider);
+        if (target.level) {
+            return std::string(words.held_word) + " " + std::to_string(*target.level);
+        }
+        return slot_name(state, i) + " " + std::string(words.name) + ": " +
+               std::to_string(state.slots[i].*slider->value);
+    }
+    case TargetKind::name_box:
+        return slot_name(state, i) + " " + std::string(kNameBox);
+    case TargetKind::teams:
+        return std::string(kTeamsButton) + ": " + std::string(state.teams ? kOn : kOff);
+    case TargetKind::rules:
+        return std::string(kRulesButton) + ": " + rules_header(state.match_type, state.rules);
+    case TargetKind::back:
+        return std::string(kBackButton);
+    case TargetKind::arrow: {
+        const ArrowKind& arrow = arrow_kind(target);
+        ArrowRowWords words = arrow_row_words(state, arrow.row);
+        return std::string(words.name) + ": " + words.value + ", " +
+               std::string(arrow.higher ? words.higher : words.lower);
+    }
+    }
+    return "";
+}
+
+std::string CssSpeech::slot_words(const A11yCssState& state, int slot) {
+    std::string out = slot_kind(state, slot);
+    if (state.slots[slot].kind != A11Y_CSS_CLOSED) {
+        out += ", " + chosen_words(state.slots[slot]);
+    }
+    return out;
+}
+
+std::string CssSpeech::chosen_words(const A11yCssSlot& slot) {
+    A11yCharacter character = chosen(slot);
+    return character != A11Y_NO_CHARACTER ? name(character) : std::string(kNoCharacter);
+}
+
+std::string CssSpeech::name(A11yCharacter character) {
+    if (std::optional<std::string_view> known = character_name(character)) {
+        return std::string(*known);
+    }
+    m_log_once(
+        "[a11y] character " + std::to_string(character) + ": not in the character names table");
+    return std::string(kUnknownCharacter) + " " + std::to_string(character);
+}
+
+}  // namespace a11y

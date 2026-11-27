@@ -1,0 +1,297 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
+/* The game text decoder against byte code written by hand, in the layout the
+ * game's own encoder (HSD_SisLib_803A67EC) and string archives use. */
+#include "game_text.hpp"
+#include <cassert>
+#include <cstdint>
+#include <iostream>
+#include <string>
+#include <vector>
+
+namespace {
+
+using Bytes = std::vector<std::uint8_t>;
+
+/* NTSC-U glyph code of an ASCII letter, digit, space or full stop. */
+std::uint16_t glyph(char c) {
+    if (c >= '0' && c <= '9') {
+        return 0x2000 + (c - '0');
+    }
+    if (c >= 'A' && c <= 'Z') {
+        return 0x200A + (c - 'A');
+    }
+    if (c >= 'a' && c <= 'z') {
+        return 0x2024 + (c - 'a');
+    }
+    if (c == ' ') {
+        return 0x20E3;
+    }
+    assert(c == '.');
+    return 0x20E7;
+}
+
+void add_text(Bytes& out, const char* text) {
+    for (; *text != '\0'; text++) {
+        std::uint16_t code = glyph(*text);
+        out.push_back(static_cast<std::uint8_t>(code >> 8));
+        out.push_back(static_cast<std::uint8_t>(code));
+    }
+}
+
+void add_slot(Bytes& out, std::uint8_t op, std::uint32_t slot) {
+    out.push_back(op);
+    for (int shift = 24; shift >= 0; shift -= 8) {
+        out.push_back(static_cast<std::uint8_t>(slot >> shift));
+    }
+}
+
+/* Jump targets for the tests: slot n is s_targets[n - 1]. */
+std::vector<const Bytes*> s_targets;
+
+const std::uint8_t* resolve(std::uint32_t slot) {
+    if (slot == 0 || slot > s_targets.size()) {
+        return nullptr;
+    }
+    return s_targets[slot - 1]->data();
+}
+
+a11y::GameTextSource ntsc() {
+    a11y::GameTextSource source;
+    source.resolve = resolve;
+    return source;
+}
+
+void skips_formatting_commands() {
+    /* Scale, colour, then the text and the commands that pop them. */
+    Bytes b = {0x0E, 0x00, 0x80, 0x00, 0x80, 0x0C, 0xFF, 0xFF, 0xFF};
+    add_text(b, "Hi there.");
+    b.insert(b.end(), {0x0D, 0x0F, 0x00});
+    a11y::DecodedText d = a11y::decode_game_text(b.data(), ntsc());
+    assert(d.text == "Hi there.");
+    assert(d.unknown_glyphs == 0);
+    assert(!d.malformed);
+}
+
+void line_commands_become_one_break() {
+    /* A positioned line, two line breaks in a row with spaces around them, a
+     * trailing break. */
+    Bytes b = {0x07, 0x00, 0x10, 0x00, 0x20};
+    add_text(b, "Line 1 ");
+    b.insert(b.end(), {0x03, 0x03});
+    add_text(b, " Line 2");
+    b.insert(b.end(), {0x03, 0x00});
+    a11y::DecodedText d = a11y::decode_game_text(b.data(), ntsc());
+    assert(d.text == "Line 1\nLine 2");
+}
+
+void follows_calls_and_jumps() {
+    Bytes called;
+    add_text(called, "B");
+    called.push_back(0x00);
+    Bytes jumped;
+    add_text(jumped, "D");
+    jumped.push_back(0x00);
+    s_targets = {&called, &jumped};
+
+    Bytes b;
+    add_text(b, "A");
+    add_slot(b, 0x09, 1);
+    add_text(b, "C");
+    add_slot(b, 0x08, 2);
+    add_text(b, "never");
+    b.push_back(0x00);
+    a11y::DecodedText d = a11y::decode_game_text(b.data(), ntsc());
+    assert(d.text == "ABCD");
+    assert(!d.malformed);
+    s_targets.clear();
+}
+
+void font_glyphs_are_marked() {
+    Bytes b;
+    add_text(b, "A");
+    b.insert(b.end(), {0x40, 0x05, 0x00});
+    a11y::DecodedText d = a11y::decode_game_text(b.data(), ntsc());
+    assert(d.text == "A{glyph 4005}");
+    assert(d.unknown_glyphs == 1);
+}
+
+void prize_font_glyph_decodes() {
+    /* "Pokémon" as SdPrize spells it, its é from the screen's own font. */
+    Bytes b;
+    add_text(b, "Pok");
+    b.insert(b.end(), {0x40, 0x00});
+    add_text(b, "mon");
+    b.push_back(0x00);
+    a11y::GameTextSource prize = ntsc();
+    prize.font_glyphs = a11y::prize_font_glyphs();
+    a11y::DecodedText d = a11y::decode_game_text(b.data(), prize);
+    assert(d.text == "Pokémon");
+    assert(d.unknown_glyphs == 0);
+    /* Kept to that table: elsewhere the glyph is still unknown. */
+    assert(a11y::decode_game_text(b.data(), ntsc()).text == "Pok{glyph 4000}mon");
+    /* "Ray Mk II", the numeral one glyph; the table's filler glyph and those
+     * past its known ones stay unknown. */
+    Bytes ray;
+    add_text(ray, "Ray Mk ");
+    ray.insert(ray.end(), {0x40, 0x02, 0x40, 0x01, 0x40, 0x03, 0x00});
+    d = a11y::decode_game_text(ray.data(), prize);
+    assert(d.text == "Ray Mk II{glyph 4001}{glyph 4003}");
+    assert(d.unknown_glyphs == 2);
+}
+
+void menu_and_results_font_glyphs_decode() {
+    /* SdMenu and SdSlChr: "Pokémon", "Mushroom Kingdom II"; the filler and
+     * the Japanese stage names' glyphs stay unknown. */
+    Bytes b;
+    add_text(b, "Pok");
+    b.insert(b.end(), {0x40, 0x00});
+    add_text(b, "mon ");
+    b.insert(b.end(), {0x40, 0x02, 0x40, 0x01, 0x40, 0x03, 0x00});
+    a11y::GameTextSource menu = ntsc();
+    menu.font_glyphs = a11y::menu_font_glyphs();
+    a11y::DecodedText d = a11y::decode_game_text(b.data(), menu);
+    assert(d.text == "Pokémon II{glyph 4001}{glyph 4003}");
+    assert(d.unknown_glyphs == 2);
+    /* SdRst: "Pokémon KO"; its 0x4002 is not the numeral. */
+    a11y::GameTextSource results = ntsc();
+    results.font_glyphs = a11y::results_font_glyphs();
+    d = a11y::decode_game_text(b.data(), results);
+    assert(d.text == "Pokémon {glyph 4002}{glyph 4001}{glyph 4003}");
+    assert(d.unknown_glyphs == 3);
+}
+
+void kana_and_kanji_decode() {
+    /* The first hiragana and the last glyph of the atlas. */
+    Bytes b = {0x20, 0x3E, 0x21, 0x1E, 0x00};
+    a11y::DecodedText d = a11y::decode_game_text(b.data(), ntsc());
+    assert(d.text == "ぁ明");
+}
+
+void pal_uses_one_byte_per_glyph() {
+    a11y::GameTextSource pal = ntsc();
+    pal.pal = true;
+    Bytes b = {0x0C, 0xFF, 0xFF, 0xFF, 'H', 'i', 0x20, 't', 'o', '!', 0x80, 0x0D, 0x00};
+    a11y::DecodedText d = a11y::decode_game_text(b.data(), pal);
+    assert(d.text == "Hi to!{glyph 80}");
+    assert(d.unknown_glyphs == 1);
+}
+
+void stops_on_what_it_cannot_follow() {
+    Bytes unknown_op;
+    add_text(unknown_op, "A");
+    unknown_op.insert(unknown_op.end(), {0x1B, 0x00});
+    a11y::DecodedText d = a11y::decode_game_text(unknown_op.data(), ntsc());
+    assert(d.malformed && d.text == "A");
+
+    Bytes nowhere;
+    add_slot(nowhere, 0x08, 7);
+    assert(a11y::decode_game_text(nowhere.data(), ntsc()).malformed);
+
+    Bytes loop;
+    add_slot(loop, 0x08, 1);
+    s_targets = {&loop};
+    assert(a11y::decode_game_text(loop.data(), ntsc()).malformed);
+    s_targets.clear();
+
+    assert(a11y::decode_game_text(nullptr, ntsc()).malformed);
+}
+
+}  // namespace
+
+void shift_jis_name_tags_decode() {
+    /* Full-width letters, digits and the name keyboard's symbols fold to
+     * ASCII; the ideographic space too. */
+    a11y::DecodedText tag = a11y::decode_shift_jis(
+        "\x82\x60\x82\x61\x82\x81\x82\x4f\x82\x58\x81\x40\x81\x44\x81\x90\x81\x95\x81\x93\x81\x97"
+        "\x81\x48\x81\x49\x81\x81\x81\x7b\x81\x7c");
+    assert(tag.text == "ABa09 .$&%@?!=+-");
+    assert(tag.unknown_glyphs == 0 && !tag.malformed);
+    /* The port as the screen draws it without a tag. */
+    assert(a11y::decode_shift_jis("\x82\x6f\x82\x51").text == "P2");
+    /* Plain ASCII passes through. */
+    assert(a11y::decode_shift_jis("Abc 1").text == "Abc 1");
+    /* Kana, the long vowel mark and the full stop of the Japanese keyboard. */
+    assert(
+        a11y::decode_shift_jis("\x82\xa0\x82\xf1\x83\x41\x83\x93\x83\x94\x81\x5b\x81\x42").text ==
+        "あんアンヴー。");
+    /* Anything else is marked and counted; a lead byte with no trail stops. */
+    a11y::DecodedText other = a11y::decode_shift_jis("A\x88\x9f"
+                                                     "B");
+    assert(other.text == "A{sjis 889F}B");
+    assert(other.unknown_glyphs == 1 && !other.malformed);
+    a11y::DecodedText cut = a11y::decode_shift_jis("A\x82");
+    assert(cut.text == "A" && cut.malformed);
+    assert(a11y::spoken_text(other.text) == "AB");
+    assert(a11y::decode_shift_jis(nullptr).malformed);
+}
+
+/* A clean decode has no trouble; otherwise the text on one line and what
+ * became of it. */
+void decode_trouble_names_what_went_wrong() {
+    a11y::DecodedText clean{"Fine", 0, false};
+    assert(a11y::decode_trouble(clean).empty());
+    a11y::DecodedText glyphs{"Pok{glyph 4000}mon\nX", 1, false};
+    assert(a11y::decode_trouble(glyphs) == "\"Pok{glyph 4000}mon / X\", unknown glyphs left out");
+    a11y::DecodedText both{"A", 2, true};
+    assert(a11y::decode_trouble(both) == "\"A\", unknown glyphs left out, malformed");
+    a11y::DecodedText cut{"A", 0, true};
+    assert(a11y::decode_trouble(cut) == "\"A\", malformed");
+}
+
+/* The readers' shared step: spoken words, and a problem logged under the
+ * reader's own words. */
+void spoken_game_text_logs_trouble() {
+    std::vector<std::string> logged;
+    auto log = [&logged](const std::string& line) { logged.push_back(line); };
+    Bytes clean;
+    add_text(clean, "Hi there.");
+    clean.push_back(0x00);
+    assert(a11y::spoken_game_text(clean.data(), ntsc(), log, "test: text 1") == "Hi there.");
+    assert(logged.empty());
+    Bytes marked;
+    add_text(marked, "A");
+    marked.insert(marked.end(), {0x40, 0x05, 0x00});
+    assert(a11y::spoken_game_text(marked.data(), ntsc(), log, "test: text 2") == "A");
+    assert(logged.size() == 1);
+    assert(logged[0] == "test: text 2 \"A{glyph 4005}\", unknown glyphs left out");
+    assert(a11y::spoken_game_text(nullptr, ntsc(), log, "test: text 3").empty());
+    assert(logged.size() == 1);
+}
+
+/* The player label: the name tag where it has words, otherwise the port, and
+ * a tag's trouble logged under the reader's own words. */
+void player_label_is_the_tag_or_the_port() {
+    std::vector<std::string> logged;
+    auto log = [&logged](const std::string& line) { logged.push_back(line); };
+    /* A full-width tag as the name keyboard writes it. */
+    assert(a11y::player_label("\x82\x60\x82\x81", 1, log, "test:") == "Aa");
+    assert(a11y::player_label("", 1, log, "test:") == "P2");
+    assert(a11y::player_label(nullptr, 3, log, "test:") == "P4");
+    assert(logged.empty());
+    /* An unknown character is left out of the tag and logged. */
+    assert(a11y::player_label("A\x88\x9f", 0, log, "test:") == "A");
+    assert(logged.size() == 1);
+    assert(logged[0] == "test: name tag \"A{sjis 889F}\", unknown glyphs left out");
+    /* A tag with no words left goes by the port, its trouble logged. */
+    assert(a11y::player_label("\x88\x9f", 2, log, "test:") == "P3");
+    assert(logged.size() == 2);
+    assert(logged[1] == "test: name tag \"{sjis 889F}\", unknown glyphs left out");
+}
+
+int main() {
+    decode_trouble_names_what_went_wrong();
+    spoken_game_text_logs_trouble();
+    player_label_is_the_tag_or_the_port();
+    shift_jis_name_tags_decode();
+    skips_formatting_commands();
+    line_commands_become_one_break();
+    follows_calls_and_jumps();
+    font_glyphs_are_marked();
+    prize_font_glyph_decodes();
+    menu_and_results_font_glyphs_decode();
+    kana_and_kanji_decode();
+    pal_uses_one_byte_per_glyph();
+    stops_on_what_it_cannot_follow();
+    std::cout << "game_text: all tests passed\n";
+    return 0;
+}

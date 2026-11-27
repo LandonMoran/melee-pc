@@ -1,0 +1,101 @@
+# Rumble's names list on a save with ten names (make_save.py names: ANNA,
+# BEN, CARL, DORA, ED, FAY, GUS, HAL, IVY and JO, rumble on and off by
+# turns), more than the eight the list shows: the opening with the names
+# list's hint, Right into the list on ANNA, Down past the eighth name to the
+# last, which scrolls, and once more at the end, which says nothing, Up back
+# to the first, scrolling back, and once more at the top, A twice to switch
+# ANNA's rumble off and on, Left back to P1's panel, and B to Options. The
+# save is made first; the switches reach the run's own card only:
+#   python tools/a11y/make_save.py names
+#   python tools/a11y/drive.py tools/a11y/rumble_names.drive --card=build/drive/names.gci
+# run_level.py counts the name lines: eighteen, so a move at either end that
+# says something fails it.
+
+wait '"Opening movie\. Press Start to skip\."' 60
+press Start until '"Title screen\. Press Start\."' 20 1
+sleep 1
+press Start until '"Main Menu\. ' 20 1
+# The menu ignores input for its first 20 frames.
+sleep 1
+
+# Options, opening on Rumble.
+press Down
+wait '"VS\. Mode\. '
+press Down
+wait '"Trophies\. '
+press Down
+wait '"Options\. '
+press A
+wait '"Options\. Rumble\. '
+sleep 0.3
+
+# The opening, with the names list's hint.
+press A
+wait '"Rumble\. P1: O(n|ff)\. (P[2-4]: O(n|ff)\. )*A to turn on or off, right for the names list\. Player name entry must precede Rumble setting\."$'
+# The screen ignores input until its intro has played.
+sleep 1
+
+# Into the names list, on the first name.
+press Right
+wait '"Names\. ANNA: On"$'
+
+# Down to the eighth name, the last row shown.
+press Down
+wait '"BEN: Off"$'
+press Down
+wait '"CARL: On"$'
+press Down
+wait '"DORA: Off"$'
+press Down
+wait '"ED: On"$'
+press Down
+wait '"FAY: Off"$'
+press Down
+wait '"GUS: On"$'
+press Down
+wait '"HAL: Off"$'
+# Past it: the list scrolls.
+press Down
+wait '"IVY: On"$'
+press Down
+wait '"JO: Off"$'
+# The last name: nothing.
+press Down
+sleep 0.5
+
+# Up to the top of the rows shown, then scrolling back.
+press Up
+wait '"IVY: On"$'
+press Up
+wait '"HAL: Off"$'
+press Up
+wait '"GUS: On"$'
+press Up
+wait '"FAY: Off"$'
+press Up
+wait '"ED: On"$'
+press Up
+wait '"DORA: Off"$'
+press Up
+wait '"CARL: On"$'
+press Up
+wait '"BEN: Off"$'
+press Up
+wait '"ANNA: On"$'
+# The first name: nothing.
+press Up
+sleep 0.5
+
+# ANNA's rumble off and on.
+press A
+wait '"Off"$'
+press A
+wait '"On"$'
+
+# Back to P1's panel.
+press Left
+wait '"P1: O(n|ff)"$'
+
+# B back to Options.
+press B
+wait '"Options\. Rumble\. Turn the Rumble feature on or off\."'

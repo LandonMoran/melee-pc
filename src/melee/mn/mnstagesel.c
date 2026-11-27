@@ -552,6 +552,7 @@ void fn_8025A310(HSD_GObj* gobj)
 
     HSD_JObjSetTranslate(jobj, &sp1C);
     lb_8000B1CC(jobj, NULL, &sp1C);
+    pc_a11y_sss_cursor(sp1C.x, sp1C.y, mnStageSel_804D6CAC, mnStageSel_804D6CAD);
     for (i = 0; i < 0x1E; i++) {
         if (mnStageSel_803F06D0[i].x8 != 0) {
             lb_8000B1CC(mnStageSel_803F06D0[i].x0, NULL, &sp10);
@@ -1071,6 +1072,7 @@ void mnStageSel_Scene_OnFrame(void)
         return;
     }
 #endif
+    pc_a11y_sss_frame(sss_data, mnStageSel_803F06D0, sizeof mnStageSel_803F06D0[0], mnStageSel_804D6CAE, mnStageSel_804D6CAF, mnStageSel_804D6CA4, mnStageSel_804D6CA0, mnStageSel_804D50A0, net_local_pick, net_remote_pick);
     if (sss_data->force_stage_id >= 0) {
         mnStageSel_804D6CAF = 2;
         sss_data->vs.start.rules.stkind = sss_data->force_stage_id;
@@ -1171,6 +1173,7 @@ void mnStageSel_Scene_OnFrame(void)
             pc_log_line("sss: resolved cell %d stage %d", mnStageSel_804D6CAE,
                         sss_data->vs.start.rules.stkind);
 #endif
+        pc_a11y_sss_resolved(mnStageSel_804D6CAE, net_local_pick, net_remote_pick);
         gm_801A4B60();
     }
 }

@@ -12,6 +12,7 @@
 #include <SDL3/SDL_events.h>
 #include <jni.h>
 #include <mutex>
+#include <stdio.h>
 
 /* Every signature below was taken from android-34 android.jar with
  * `javap -s -constants`, not from memory:
@@ -268,6 +269,46 @@ void pc_android_set_launcher_active(bool active) {
     env->DeleteLocalRef(activity);
 }
 
+/* MeleeActivity.showStartupDiscMenu (Ljava/lang/String;)Ljava/lang/String;
+ * shows the startup disc dialog on the UI thread and returns the image the
+ * player chose, or null for the launcher. It blocks this thread until then,
+ * which is the point: the launcher must not run while a dialog is over it. */
+bool pc_android_startup_disc(const char* saved_disc, char* out, size_t cap) {
+    if (out == nullptr || cap == 0) {
+        return false;
+    }
+    out[0] = '\0';
+    JNIEnv* env = (JNIEnv*)SDL_GetAndroidJNIEnv();
+    if (env == nullptr || env->PushLocalFrame(16) != JNI_OK) {
+        return false;
+    }
+    jobject activity = (jobject)SDL_GetAndroidActivity();
+    jclass cls = activity != nullptr ? env->GetObjectClass(activity) : nullptr;
+    jmethodID method = cls != nullptr ?
+                           env->GetMethodID(cls,
+                               "showStartupDiscMenu", "(Ljava/lang/String;)Ljava/lang/String;") :
+                           nullptr;
+    if (method != nullptr) {
+        jobject saved = env->NewStringUTF(saved_disc != nullptr ? saved_disc : "");
+        if (saved != nullptr) {
+            jobject choice = env->CallObjectMethod(activity, method, saved);
+            if (!threw(env, "showStartupDiscMenu") && choice != nullptr) {
+                const char* utf = env->GetStringUTFChars((jstring)choice, nullptr);
+                if (utf != nullptr) {
+                    snprintf(out, cap, "%s", utf);
+                    env->ReleaseStringUTFChars((jstring)choice, utf);
+                }
+            }
+        }
+    }
+    env->PopLocalFrame(nullptr);
+    if (out[0] == '\0') {
+        return false;
+    }
+    pc_log_line("disc: chosen in the Android startup menu");
+    return true;
+}
+
 void pc_android_export_logs(void) {
     JNIEnv* env = (JNIEnv*)SDL_GetAndroidJNIEnv();
     if (env == nullptr || env->PushLocalFrame(8) != JNI_OK)
@@ -279,6 +320,70 @@ void pc_android_export_logs(void) {
         env->CallVoidMethod(activity, method);
     threw(env, "exportLogs");
     env->PopLocalFrame(nullptr);
+}
+
+/* MeleeActivity.takePersistableUri (Ljava/lang/String;)V, for a disc the
+ * launcher keeps as a content:// URI: the picker grants read access for the
+ * session only, and the launcher stores the URI in launcher.cfg, so the next
+ * launch would find it unreadable without this. A provider that offers no
+ * persistable grant throws, which is cleared and costs only that. */
+void pc_android_take_persistable_uri(const char* uri) {
+    if (uri == nullptr || uri[0] == '\0') {
+        return;
+    }
+    JNIEnv* env = (JNIEnv*)SDL_GetAndroidJNIEnv();
+    if (env == nullptr || env->PushLocalFrame(8) != JNI_OK) {
+        return;
+    }
+    jobject activity = (jobject)SDL_GetAndroidActivity();
+    jclass cls = activity != nullptr ? env->GetObjectClass(activity) : nullptr;
+    jmethodID method = cls != nullptr ?
+                           env->GetMethodID(cls, "takePersistableUri", "(Ljava/lang/String;)V") :
+                           nullptr;
+    if (method != nullptr) {
+        jstring text = env->NewStringUTF(uri);
+        if (text != nullptr) {
+            env->CallVoidMethod(activity, method, text);
+            threw(env, "takePersistableUri");
+        }
+    }
+    env->PopLocalFrame(nullptr);
+}
+
+/* MeleeActivity.getA11ySoundsDir ()Ljava/lang/String; unpacks the cues' sound
+ * files from the APK into the app's own files directory on first ask, since
+ * assets inside the APK are not a folder the cue engine could read. */
+const char* pc_android_a11y_sounds_dir(void) {
+    static char s_dir[4096];
+    static bool s_done;
+    std::lock_guard<std::mutex> guard(g_mutex);
+    if (!s_done) {
+        s_done = true;
+        JNIEnv* env = (JNIEnv*)SDL_GetAndroidJNIEnv();
+        if (env != nullptr && env->PushLocalFrame(8) == JNI_OK) {
+            jobject activity = (jobject)SDL_GetAndroidActivity();
+            jclass cls = activity != nullptr ? env->GetObjectClass(activity) : nullptr;
+            jmethodID method = cls != nullptr ?
+                                   env->GetMethodID(
+                                       cls, "getA11ySoundsDir", "()Ljava/lang/String;") :
+                                   nullptr;
+            if (method != nullptr) {
+                jstring dir = (jstring)env->CallObjectMethod(activity, method);
+                if (!threw(env, "getA11ySoundsDir") && dir != nullptr) {
+                    const char* utf = env->GetStringUTFChars(dir, nullptr);
+                    if (utf != nullptr) {
+                        snprintf(s_dir, sizeof s_dir, "%s", utf);
+                        env->ReleaseStringUTFChars(dir, utf);
+                    }
+                }
+            }
+            env->PopLocalFrame(nullptr);
+        }
+        if (s_dir[0] == '\0') {
+            pc_log_line("a11y: no unpacked cue sounds: the audio cues stay silent");
+        }
+    }
+    return s_dir[0] != '\0' ? s_dir : nullptr;
 }
 
 const char* pc_android_device_name(void) {
@@ -317,8 +422,24 @@ void pc_android_set_launcher_active(bool active) {
     (void)active;
 }
 
+/* Not Android: the launcher is the only disc menu, as it always was. */
+bool pc_android_startup_disc(const char* saved_disc, char* out, size_t cap) {
+    (void)saved_disc;
+    (void)out;
+    (void)cap;
+    return false;
+}
+
 const char* pc_android_device_name(void) {
     return nullptr;
+}
+
+const char* pc_android_a11y_sounds_dir(void) {
+    return nullptr;
+}
+
+void pc_android_take_persistable_uri(const char* uri) {
+    (void)uri;
 }
 
 #endif

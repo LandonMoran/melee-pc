@@ -1,0 +1,855 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Accessibility fork: speech, its screen reader library (Prism), the readers
+# that turn RmlUi pages and the game's screens into speech, and the cue engine
+# with its sound library (miniaudio).
+# Included from the root CMakeLists.txt with one line, after the melee target
+# and the unit_tests target exist. Everything the fork adds to the build lives
+# here, so base merges never touch it.
+
+# The fork's own version and the build label (fork_version.cpp, ADR-0011).
+# The version is src/pc/a11y/FORK_VERSION, the latest release's, which the
+# release skill bumps; a change to it re-configures, as the root VERSION does.
+# The root VERSION stays the base port's app version, which online pairing
+# needs. Not named VERSION: this folder is an include directory, and on a
+# Mac's case-insensitive disk libc++'s #include <version> would open it.
+# The label comes from MELEE_A11Y_BUILD_LABEL, which CI sets
+# (.github/workflows/a11y.yml): unset or empty, a local build, labelled
+# "local build"; "none", a release's tag build, unlabelled; anything else is
+# the label as written, "dev build 1a2b3c4" on other CI builds.
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_LIST_DIR}/FORK_VERSION")
+file(STRINGS "${CMAKE_CURRENT_LIST_DIR}/FORK_VERSION" A11Y_FORK_VERSION LIMIT_COUNT 1)
+if (NOT A11Y_FORK_VERSION MATCHES "^[0-9]+\\.[0-9]+\\.[0-9]+$")
+    message(FATAL_ERROR "a11y: src/pc/a11y/FORK_VERSION holds \"${A11Y_FORK_VERSION}\", "
+            "not a fork version MAJOR.MINOR.PATCH such as 0.1.0 (no v, no suffix).")
+endif ()
+if ("$ENV{MELEE_A11Y_BUILD_LABEL}" STREQUAL "")
+    set(A11Y_BUILD_LABEL "local build")
+elseif ("$ENV{MELEE_A11Y_BUILD_LABEL}" STREQUAL "none")
+    set(A11Y_BUILD_LABEL "")
+else ()
+    set(A11Y_BUILD_LABEL "$ENV{MELEE_A11Y_BUILD_LABEL}")
+endif ()
+# Letters, digits, spaces and . _ - alone, so the label needs no escaping
+# on its way into a C string.
+if (NOT A11Y_BUILD_LABEL MATCHES "^[A-Za-z0-9 ._-]*$")
+    message(FATAL_ERROR "a11y: MELEE_A11Y_BUILD_LABEL \"${A11Y_BUILD_LABEL}\" may hold only "
+            "letters, digits, spaces and . _ -")
+endif ()
+message(STATUS "a11y: Non-Visual Melee ${A11Y_FORK_VERSION}, build label \"${A11Y_BUILD_LABEL}\"")
+set_source_files_properties(${CMAKE_CURRENT_LIST_DIR}/fork_version.cpp PROPERTIES
+        COMPILE_DEFINITIONS "A11Y_FORK_VERSION=\"${A11Y_FORK_VERSION}\";A11Y_BUILD_LABEL=\"${A11Y_BUILD_LABEL}\"")
+
+# The one place to bump Prism: release tag and the sha256 of each platform's
+# zip for it, as the platform branches below name them.
+set(A11Y_PRISM_VERSION v0.18.2)
+set(A11Y_PRISM_SHA256_WINDOWS 31c02e3ef2260b4d3b11fb00132f8eb12bc147b5fb17031b580670b117ba7d23)
+set(A11Y_PRISM_SHA256_MACOS 268cd7aa14e201f3281a35a0e39bd8b7f9085b9e044c2aa49e51ee1556f44062)
+
+# Per-platform Prism wiring. An empty asset means no Prism: the screen reader
+# bridge then compiles as a silent stub. Prism also publishes
+# prism-linux-x64.zip and prism-linux-arm64.zip for the same tag, so another
+# platform is a new branch here that sets the asset, its hash, the library to
+# link, the runtime file to copy and the voices' backend.
+# A11Y_VOICE_BACKEND is the Prism id of the backend the voices speak with;
+# its name and default voices are its row in screen_reader_bridge.cpp's
+# kVoiceBackends. A platform with Prism and no voice backend has no voices.
+set(A11Y_PRISM_ASSET "")
+set(A11Y_VOICE_BACKEND "")
+# iOS is APPLE too and has a launcher of its own; the fork does not build it.
+if (APPLE AND NOT (IOS OR CMAKE_SYSTEM_NAME STREQUAL "iOS"))
+    set(A11Y_MACOS ON)
+else ()
+    set(A11Y_MACOS OFF)
+endif ()
+if (WIN32 AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(AMD64|amd64|x86_64)$")
+    set(A11Y_PRISM_ASSET prism-windows-x64.zip)
+    set(A11Y_PRISM_SHA256 ${A11Y_PRISM_SHA256_WINDOWS})
+    # The dynamic release variant: the static one needs delay loading on the
+    # consumer side, which MinGW lacks. GNU ld reads the MSVC import library
+    # directly; the exported surface is plain C with opaque pointers.
+    set(A11Y_PRISM_LINK_LIB dynamic/release/lib/prism.lib)
+    set(A11Y_PRISM_RUNTIME_LIB dynamic/release/bin/prism.dll)
+    set(A11Y_VOICE_BACKEND PRISM_BACKEND_ONE_CORE)
+elseif (A11Y_MACOS)
+    # One universal zip (arm64 and x86_64) for every Mac. Apple's linker takes
+    # the dylib itself; its install name is @rpath/libprism.dylib and it needs
+    # only the system's frameworks, so it is found beside melee in a build
+    # directory (the rpath below) and in Melee.app's Contents/Frameworks,
+    # where tools/package_macos.sh copies it with the Homebrew dylibs.
+    # libtolk beside it is Prism's Tolk compatibility shim, unused.
+    set(A11Y_PRISM_ASSET prism-macos-universal.zip)
+    set(A11Y_PRISM_SHA256 ${A11Y_PRISM_SHA256_MACOS})
+    set(A11Y_PRISM_LINK_LIB dynamic/release/lib/libprism.dylib)
+    set(A11Y_PRISM_RUNTIME_LIB dynamic/release/lib/libprism.dylib)
+    set_property(TARGET melee APPEND PROPERTY BUILD_RPATH "@executable_path")
+    set(A11Y_VOICE_BACKEND PRISM_BACKEND_AV_SPEECH)
+    # AVSpeech's calls wait for the main thread, so its row in
+    # screen_reader_bridge.cpp has a turn: main_queue_mac.cpp runs the main
+    # thread's run loop through CoreFoundation, built here alone and named to
+    # the bridge by A11Y_MAIN_QUEUE_TURN.
+    target_sources(melee PRIVATE ${CMAKE_CURRENT_LIST_DIR}/main_queue_mac.cpp)
+    target_compile_definitions(melee PRIVATE A11Y_MAIN_QUEUE_TURN)
+    target_link_libraries(melee PRIVATE "-framework CoreFoundation")
+elseif (ANDROID)
+    # No Prism: it publishes no Android build, so this platform speaks through
+    # Android's own TextToSpeech, reached over JNI (android_bridge.cpp and
+    # android_tts.cpp here, platforms/android/app/src/main/java/dev/melee/
+    # MeleeSpeech.java on the Java side). No A11Y_PRISM_ASSET or
+    # A11Y_VOICE_BACKEND: those name Prism's assets and its backend id, and
+    # this build brings its own. The engine's calls run on Android's main
+    # thread, so - unlike AVSpeech - nothing needs a turn (main_queue_mac.cpp
+    # is the Mac's).
+    set(A11Y_ANDROID ON)
+    target_sources(melee PRIVATE
+            ${CMAKE_CURRENT_LIST_DIR}/android_bridge.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/android_tts.cpp)
+    target_compile_definitions(melee PRIVATE A11Y_ANDROID)
+    # SDL links both already; naming them here keeps the branch self-contained.
+    target_link_libraries(melee PRIVATE log android)
+endif ()
+
+target_sources(melee PRIVATE
+        ${CMAKE_CURRENT_LIST_DIR}/hooks.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/fork_version.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/update_check.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/update_hooks.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/speech.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/voices.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/voice_settings.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/voice_names.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/event_pipe.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/screen_reader_bridge.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/rmlui_reader.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/launcher_speech.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/port_menu_speech.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/settings_page.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/scene_speech.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/game_text.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/menu_speech.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/language_reader.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/erase_data_reader.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/rumble_reader.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/menu_names.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/item_names.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/menu_text.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/training_speech.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/training_names.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/match_announcer.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/item_takes.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/match_announcement_settings.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/results_speech.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/results_names.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/memcard_speech.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/unlock_speech.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/css_speech.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/css_names.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/css_targets.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/css_reader.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/lobby_speech.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/direct_speech.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/wait_status.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/sss_speech.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/sss_names.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/sss_reader.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/sss_targets.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/steering.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/steerer.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/cue_engine.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/cue_output.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/cue_sounds.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/accessibility_settings.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/switches.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/cue_settings.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/cue_system.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/value_model.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/value_file.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/position_cue.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/gap_warning.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/ledge_warning.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/item_frame.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/item_appearance.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/item_position.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/match_cues.cpp)
+target_include_directories(melee PRIVATE ${CMAKE_CURRENT_LIST_DIR})
+
+# game_access.c, the fork's C file that reads the decomp's structs, in a
+# library of its own so it is compiled as the game's files are. On a Mac the
+# melee target is Apple's clang, which lacks scalar_storage_order: the disc
+# structs' big-endian fields, the stage's line count among them, would read
+# byte-swapped (game_access.c stops a clang compile with an #error). So on a
+# Mac it goes through Homebrew GCC by tools/gcc_launcher.py, as melee_game
+# does. That launcher sends a file to GCC when an argument holds "melee_game",
+# here the object directory a11y_melee_game.dir: hence the name. Every
+# platform builds the same target, so the Windows build exercises it.
+# Rollback leaves it alone as before: cmake/*Snapshot.cmake wrap melee_game's
+# compiles alone, and the ELF linker script matches libmelee_game.a alone.
+add_library(a11y_melee_game STATIC ${CMAKE_CURRENT_LIST_DIR}/game_access.c)
+# melee_game's include directories and definitions, which melee gets the same
+# way, and the link order: the game's symbols resolve after this library.
+target_link_libraries(a11y_melee_game PRIVATE melee_game)
+target_include_directories(a11y_melee_game PRIVATE ${CMAKE_CURRENT_LIST_DIR})
+# melee's floating-point flags. The decomp's bitfields laid out as the game's
+# own files lay them out (melee_game's options in CMakeLists.txt); MinGW's
+# default layout moves every field after one. The fighter's headers also bring
+# the big-endian disc structs, whose warning the game's files turn off too.
+target_compile_options(a11y_melee_game PRIVATE ${MELEE_FP_FLAGS}
+        $<$<BOOL:${WIN32}>:-mno-ms-bitfields> $<$<C_COMPILER_ID:GNU>:-Wno-scalar-storage-order>)
+if (A11Y_MACOS OR ANDROID)
+    # The same bridge melee_game takes for the decomp's big-endian disc
+    # structs: NDK clang has no scalar_storage_order, and game_access.c reads
+    # those structs. Android's toolchain is the same launcher as the Mac's.
+    set_property(TARGET a11y_melee_game PROPERTY C_COMPILER_LAUNCHER
+            "${PROJECT_SOURCE_DIR}/tools/gcc_launcher.py")
+endif ()
+target_link_libraries(melee PRIVATE a11y_melee_game)
+
+if (A11Y_PRISM_ASSET)
+    # Prebuilt, not built from source: see docs/adr/0001-prebuilt-prism-dll.md.
+    # The directory name carries the tag, so a bump downloads afresh, and the
+    # stamp file marks a finished extraction, so a later configure works
+    # offline and an interrupted one retries.
+    set(_prism_dir "${CMAKE_BINARY_DIR}/prism-${A11Y_PRISM_VERSION}")
+    set(_prism_stamp "${_prism_dir}/.extracted")
+    if (NOT EXISTS "${_prism_stamp}")
+        set(_prism_url
+                "https://github.com/ethindp/prism/releases/download/${A11Y_PRISM_VERSION}/${A11Y_PRISM_ASSET}")
+        set(_prism_zip "${CMAKE_BINARY_DIR}/${A11Y_PRISM_ASSET}")
+        message(STATUS "a11y: downloading Prism ${A11Y_PRISM_VERSION} (${A11Y_PRISM_ASSET})")
+        file(DOWNLOAD "${_prism_url}" "${_prism_zip}"
+                EXPECTED_HASH SHA256=${A11Y_PRISM_SHA256}
+                STATUS _prism_status)
+        list(GET _prism_status 0 _prism_code)
+        if (NOT _prism_code EQUAL 0)
+            list(GET _prism_status 1 _prism_error)
+            file(REMOVE "${_prism_zip}")
+            message(FATAL_ERROR "a11y: could not download ${_prism_url}: ${_prism_error}. "
+                    "The first configure needs network access.")
+        endif ()
+        file(REMOVE_RECURSE "${_prism_dir}")
+        # The zip also carries debug builds and static libraries; only the
+        # header, the dynamic release build and the licences are used.
+        file(ARCHIVE_EXTRACT INPUT "${_prism_zip}" DESTINATION "${_prism_dir}"
+                PATTERNS include/* dynamic/release/* LICENSES/* NOTICE)
+        file(REMOVE "${_prism_zip}")
+        file(TOUCH "${_prism_stamp}")
+    endif ()
+
+    target_include_directories(melee PRIVATE "${_prism_dir}/include")
+    target_link_libraries(melee PRIVATE "${_prism_dir}/${A11Y_PRISM_LINK_LIB}")
+    # This macro, not the platform, selects the real bridge body.
+    target_compile_definitions(melee PRIVATE A11Y_HAVE_PRISM)
+    if (A11Y_VOICE_BACKEND)
+        target_compile_definitions(melee PRIVATE A11Y_VOICE_BACKEND=${A11Y_VOICE_BACKEND})
+    endif ()
+    # Linked at build time rather than loaded at run time: a missing prism.dll
+    # stops melee.exe with the Windows "not found" dialog, which a screen
+    # reader reads, instead of starting silently; on a Mac dyld stops melee
+    # with "Library not loaded".
+    add_custom_command(TARGET melee POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${_prism_dir}/${A11Y_PRISM_RUNTIME_LIB}" "$<TARGET_FILE_DIR:melee>")
+endif ()
+
+# miniaudio, the cue engine's sound library (docs/adr/0005-cues-play-through-
+# the-forks-own-audio-stream.md): one header, downloaded at configure like
+# Prism and compiled once in its own library. It must be 0.11.25 or later:
+# 0.11.21 crackled on every pitch change. The directory name carries the
+# version, so a bump downloads afresh.
+set(A11Y_MINIAUDIO_VERSION 0.11.25)
+set(A11Y_MINIAUDIO_SHA256 ac7af4de748b7e26b777f37e01cee313a308a7296a3eb080e2906b320cc55c89)
+set(_miniaudio_dir "${CMAKE_BINARY_DIR}/miniaudio-${A11Y_MINIAUDIO_VERSION}")
+if (NOT EXISTS "${_miniaudio_dir}/miniaudio.h")
+    message(STATUS "a11y: downloading miniaudio ${A11Y_MINIAUDIO_VERSION}")
+    set(_miniaudio_url
+            "https://raw.githubusercontent.com/mackron/miniaudio/${A11Y_MINIAUDIO_VERSION}/miniaudio.h")
+    file(DOWNLOAD "${_miniaudio_url}" "${_miniaudio_dir}/miniaudio.h.part"
+            EXPECTED_HASH SHA256=${A11Y_MINIAUDIO_SHA256}
+            STATUS _miniaudio_status)
+    list(GET _miniaudio_status 0 _miniaudio_code)
+    if (NOT _miniaudio_code EQUAL 0)
+        list(GET _miniaudio_status 1 _miniaudio_error)
+        file(REMOVE "${_miniaudio_dir}/miniaudio.h.part")
+        message(FATAL_ERROR "a11y: could not download ${_miniaudio_url}: ${_miniaudio_error}. "
+                "The first configure needs network access.")
+    endif ()
+    file(RENAME "${_miniaudio_dir}/miniaudio.h.part" "${_miniaudio_dir}/miniaudio.h")
+endif ()
+add_library(a11y_miniaudio STATIC ${CMAKE_CURRENT_LIST_DIR}/miniaudio_impl.c)
+# A system include, so its warnings stay out of the files that include it.
+target_include_directories(a11y_miniaudio SYSTEM PUBLIC "${_miniaudio_dir}")
+# Public: these change the layout of miniaudio's structs, so every file that
+# includes the header gets them. SDL plays the mix, so no device code; the
+# cues never write audio files.
+target_compile_definitions(a11y_miniaudio PUBLIC MA_NO_DEVICE_IO MA_NO_ENCODING)
+target_compile_options(a11y_miniaudio PRIVATE -w)
+target_link_libraries(melee PRIVATE a11y_miniaudio)
+
+# Signalsmith Stretch (MIT, header-only, with its own copy of the Signalsmith
+# DSP library), the spectral pitch shifter that makes a cue sound from a file
+# at other pitches with its length kept (pitch_shift.cpp, the Star Fox 64
+# fork's choice). 1.1.0 is the last release that carries everything it needs
+# in its own archive. Downloaded at configure like miniaudio; its two licence
+# files go into the CI packages. Compiled once in its own library, optimised
+# even in a debug build, where the library runs about ten times slower.
+set(A11Y_STRETCH_VERSION 1.1.0)
+set(A11Y_STRETCH_SHA256 5a103e5b9fd3ec14ebe4523167e6e6300a768aeaa361fc4fa2695a95da7ef0d9)
+set(_stretch_dir "${CMAKE_BINARY_DIR}/signalsmith-stretch-${A11Y_STRETCH_VERSION}")
+# The stamp marks a finished extraction, as Prism's does.
+set(_stretch_stamp "${_stretch_dir}/.extracted")
+if (NOT EXISTS "${_stretch_stamp}")
+    message(STATUS "a11y: downloading Signalsmith Stretch ${A11Y_STRETCH_VERSION}")
+    set(_stretch_url
+            "https://github.com/Signalsmith-Audio/signalsmith-stretch/archive/refs/tags/${A11Y_STRETCH_VERSION}.zip")
+    set(_stretch_zip "${CMAKE_BINARY_DIR}/signalsmith-stretch-${A11Y_STRETCH_VERSION}.zip")
+    file(DOWNLOAD "${_stretch_url}" "${_stretch_zip}"
+            EXPECTED_HASH SHA256=${A11Y_STRETCH_SHA256}
+            STATUS _stretch_status)
+    list(GET _stretch_status 0 _stretch_code)
+    if (NOT _stretch_code EQUAL 0)
+        list(GET _stretch_status 1 _stretch_error)
+        file(REMOVE "${_stretch_zip}")
+        message(FATAL_ERROR "a11y: could not download ${_stretch_url}: ${_stretch_error}. "
+                "The first configure needs network access.")
+    endif ()
+    # The archive's one folder is signalsmith-stretch-<version>, the
+    # directory named above.
+    file(REMOVE_RECURSE "${_stretch_dir}")
+    file(ARCHIVE_EXTRACT INPUT "${_stretch_zip}" DESTINATION "${CMAKE_BINARY_DIR}"
+            PATTERNS "*/signalsmith-stretch.h" "*/LICENSE.txt" "*/dsp/*.h" "*/dsp/LICENSE.txt")
+    file(REMOVE "${_stretch_zip}")
+    file(TOUCH "${_stretch_stamp}")
+endif ()
+add_library(a11y_pitch_shift STATIC ${CMAKE_CURRENT_LIST_DIR}/pitch_shift.cpp)
+target_include_directories(a11y_pitch_shift PRIVATE ${CMAKE_CURRENT_LIST_DIR})
+target_include_directories(a11y_pitch_shift SYSTEM PRIVATE "${_stretch_dir}")
+target_compile_options(a11y_pitch_shift PRIVATE -O2)
+target_link_libraries(melee PRIVATE a11y_pitch_shift)
+
+# melee-netcheck, the connection checker: a console program of its own beside
+# melee.exe that says whether a network suits Direct Connect, and tests two
+# players' networks against each other (netcheck.cpp). Linked statically, so
+# it is one file that runs without the game's DLLs. Not on Android, where
+# there is no console to run it in and the phone's network is the app's.
+if (NOT ANDROID)
+add_executable(melee-netcheck
+        ${CMAKE_CURRENT_LIST_DIR}/netcheck.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/netcheck_logic.cpp)
+if (WIN32)
+    target_link_libraries(melee-netcheck PRIVATE ws2_32)
+    target_link_options(melee-netcheck PRIVATE -static)
+endif ()
+endif ()
+
+if (TARGET unit_tests)
+    # The checker's parsing, verdict and probe packets, with no sockets.
+    add_executable(netcheck_test EXCLUDE_FROM_ALL
+            ${CMAKE_CURRENT_LIST_DIR}/test_netcheck.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/netcheck_logic.cpp)
+    target_include_directories(netcheck_test PRIVATE ${CMAKE_CURRENT_LIST_DIR})
+    target_compile_options(netcheck_test PRIVATE -UNDEBUG)
+    add_test(NAME netcheck COMMAND netcheck_test)
+    set_tests_properties(netcheck PROPERTIES LABELS melee)
+    add_dependencies(unit_tests netcheck_test)
+
+    # The versions' shown forms, and this build's against the version file.
+    add_executable(fork_version_test EXCLUDE_FROM_ALL
+            ${CMAKE_CURRENT_LIST_DIR}/test_fork_version.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/fork_version.cpp
+            ${PROJECT_SOURCE_DIR}/src/pc/version.cpp)
+    target_include_directories(fork_version_test PRIVATE ${PROJECT_SOURCE_DIR}/src ${CMAKE_CURRENT_LIST_DIR})
+    target_compile_options(fork_version_test PRIVATE -UNDEBUG)
+    add_test(NAME fork_version COMMAND fork_version_test ${CMAKE_CURRENT_LIST_DIR}/FORK_VERSION)
+    set_tests_properties(fork_version PROPERTIES LABELS melee)
+    add_dependencies(unit_tests fork_version_test)
+
+    # The update check's choice of release on canned release lists, its
+    # words, and the hand-offs filling the updater's state; its own
+    # pc_log_line.
+    add_executable(update_check_test EXCLUDE_FROM_ALL
+            ${CMAKE_CURRENT_LIST_DIR}/test_update_check.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/update_check.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/update_hooks.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/fork_version.cpp
+            ${PROJECT_SOURCE_DIR}/src/pc/version.cpp)
+    target_include_directories(update_check_test PRIVATE ${PROJECT_SOURCE_DIR}/src ${CMAKE_CURRENT_LIST_DIR})
+    target_compile_options(update_check_test PRIVATE -UNDEBUG)
+    add_test(NAME update_check COMMAND update_check_test ${CMAKE_BINARY_DIR}/update_check_files)
+    set_tests_properties(update_check PROPERTIES LABELS melee)
+    add_dependencies(unit_tests update_check_test)
+
+    # The base port's updater test compiles updater.cpp, which hands the
+    # update check to the fork (update_hooks.cpp); it gets the fork's side
+    # and a silent pc_log_line.
+    if (TARGET updater_test)
+        target_sources(updater_test PRIVATE
+                ${CMAKE_CURRENT_LIST_DIR}/update_check.cpp
+                ${CMAKE_CURRENT_LIST_DIR}/update_hooks.cpp
+                ${CMAKE_CURRENT_LIST_DIR}/fork_version.cpp
+                ${CMAKE_CURRENT_LIST_DIR}/test_updater_log.cpp)
+    endif ()
+
+    # Speech against a fake bridge; the test defines its own pc_log_line.
+    add_executable(speech_test EXCLUDE_FROM_ALL
+            ${CMAKE_CURRENT_LIST_DIR}/test_speech.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/speech.cpp)
+    target_include_directories(speech_test PRIVATE ${PROJECT_SOURCE_DIR}/src ${CMAKE_CURRENT_LIST_DIR})
+    target_compile_options(speech_test PRIVATE -UNDEBUG)
+    add_test(NAME speech COMMAND speech_test)
+    set_tests_properties(speech PROPERTIES LABELS melee)
+    add_dependencies(unit_tests speech_test)
+
+    # The voices against a fake voice bridge, their worker the real one, with
+    # speech over a fake screen reader and the cue engine rendered into
+    # buffers; its own pc_log_line.
+    add_executable(voices_test EXCLUDE_FROM_ALL
+            ${CMAKE_CURRENT_LIST_DIR}/test_voices.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/voices.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/speech.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/cue_engine.cpp)
+    target_include_directories(voices_test PRIVATE ${PROJECT_SOURCE_DIR}/src ${CMAKE_CURRENT_LIST_DIR})
+    target_link_libraries(voices_test PRIVATE a11y_miniaudio)
+    target_compile_options(voices_test PRIVATE -UNDEBUG)
+    add_test(NAME voices COMMAND voices_test)
+    set_tests_properties(voices PROPERTIES LABELS melee)
+    add_dependencies(unit_tests voices_test)
+
+    # The voices' rows wired as the game wires them, over the accessibility
+    # settings' file in a scratch folder, the voices' worker the real one
+    # over a fake voice bridge; a fake screen reader and its own pc_log_line.
+    # Each scratch folder here is named <suite>_files, not after its test's
+    # executable: off Windows the executable has no .exe and takes that name.
+    add_executable(voice_settings_test EXCLUDE_FROM_ALL
+            ${CMAKE_CURRENT_LIST_DIR}/test_voice_settings.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/voice_settings.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/voice_names.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/voices.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/switches.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/accessibility_settings.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/value_model.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/value_file.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/speech.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/cue_engine.cpp)
+    target_include_directories(voice_settings_test PRIVATE ${PROJECT_SOURCE_DIR}/src ${CMAKE_CURRENT_LIST_DIR})
+    target_link_libraries(voice_settings_test PRIVATE a11y_miniaudio)
+    target_compile_options(voice_settings_test PRIVATE -UNDEBUG)
+    add_test(NAME voice_settings COMMAND voice_settings_test ${CMAKE_BINARY_DIR}/voice_settings_files)
+    set_tests_properties(voice_settings PROPERTIES LABELS melee)
+    add_dependencies(unit_tests voice_settings_test)
+
+    # Launcher speech against the real resources/launcher.rml, in an RmlUi
+    # context that draws nothing, with the Accessibility category's rows
+    # built from the accessibility settings; also a fake bridge and its own
+    # pc_log_line.
+    add_executable(launcher_speech_test EXCLUDE_FROM_ALL
+            ${CMAKE_CURRENT_LIST_DIR}/test_launcher_speech.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/launcher_speech.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/rmlui_reader.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/settings_page.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/accessibility_settings.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/value_model.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/value_file.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/switches.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/cue_settings.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/match_announcement_settings.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/cue_engine.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/speech.cpp)
+    target_include_directories(launcher_speech_test PRIVATE ${PROJECT_SOURCE_DIR}/src ${CMAKE_CURRENT_LIST_DIR})
+    target_link_libraries(launcher_speech_test PRIVATE rmlui)
+    target_compile_options(launcher_speech_test PRIVATE -UNDEBUG)
+    add_test(NAME launcher_speech COMMAND launcher_speech_test ${PROJECT_SOURCE_DIR}/resources)
+    set_tests_properties(launcher_speech PROPERTIES LABELS melee)
+    add_dependencies(unit_tests launcher_speech_test)
+
+    # Port menu speech against the real resources/port-menu.rml, the same way.
+    add_executable(port_menu_speech_test EXCLUDE_FROM_ALL
+            ${CMAKE_CURRENT_LIST_DIR}/test_port_menu_speech.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/port_menu_speech.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/rmlui_reader.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/settings_page.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/accessibility_settings.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/value_model.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/value_file.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/switches.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/cue_settings.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/match_announcement_settings.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/cue_engine.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/speech.cpp)
+    target_include_directories(port_menu_speech_test PRIVATE ${PROJECT_SOURCE_DIR}/src ${CMAKE_CURRENT_LIST_DIR})
+    target_link_libraries(port_menu_speech_test PRIVATE rmlui)
+    target_compile_options(port_menu_speech_test PRIVATE -UNDEBUG)
+    add_test(NAME port_menu_speech COMMAND port_menu_speech_test ${PROJECT_SOURCE_DIR}/resources)
+    set_tests_properties(port_menu_speech PROPERTIES LABELS melee)
+    add_dependencies(unit_tests port_menu_speech_test)
+
+    # The event pipe's lines turned into SDL events; its own pc_log_line.
+    add_executable(event_pipe_test EXCLUDE_FROM_ALL
+            ${CMAKE_CURRENT_LIST_DIR}/test_event_pipe.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/event_pipe.cpp)
+    target_include_directories(event_pipe_test PRIVATE ${PROJECT_SOURCE_DIR}/src ${CMAKE_CURRENT_LIST_DIR})
+    target_link_libraries(event_pipe_test PRIVATE ${AURORA_SDL3_TARGET})
+    target_compile_options(event_pipe_test PRIVATE -UNDEBUG)
+    add_test(NAME event_pipe COMMAND event_pipe_test)
+    set_tests_properties(event_pipe PROPERTIES LABELS melee)
+    add_dependencies(unit_tests event_pipe_test)
+
+    # The scene table against a fake bridge; its own pc_log_line.
+    add_executable(scene_speech_test EXCLUDE_FROM_ALL
+            ${CMAKE_CURRENT_LIST_DIR}/test_scene_speech.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/scene_speech.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/speech.cpp)
+    target_include_directories(scene_speech_test PRIVATE ${PROJECT_SOURCE_DIR}/src ${CMAKE_CURRENT_LIST_DIR})
+    target_compile_options(scene_speech_test PRIVATE -UNDEBUG)
+    add_test(NAME scene_speech COMMAND scene_speech_test)
+    set_tests_properties(scene_speech PROPERTIES LABELS melee)
+    add_dependencies(unit_tests scene_speech_test)
+
+    # The menu reader and its leaf readers against hand-written snapshots of
+    # the main menu tree; a fake bridge and its own pc_log_line.
+    add_executable(menu_speech_test EXCLUDE_FROM_ALL
+            ${CMAKE_CURRENT_LIST_DIR}/test_menu_speech.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/menu_speech.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/language_reader.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/erase_data_reader.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/rumble_reader.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/menu_names.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/item_names.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/sss_names.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/game_text.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/speech.cpp)
+    target_include_directories(menu_speech_test PRIVATE ${PROJECT_SOURCE_DIR}/src ${CMAKE_CURRENT_LIST_DIR})
+    target_compile_options(menu_speech_test PRIVATE -UNDEBUG)
+    add_test(NAME menu_speech COMMAND menu_speech_test)
+    set_tests_properties(menu_speech PROPERTIES LABELS melee)
+    add_dependencies(unit_tests menu_speech_test)
+
+    # Training menu speech against hand-written snapshots of the menu and a
+    # fake clock; a fake bridge and its own pc_log_line.
+    add_executable(training_speech_test EXCLUDE_FROM_ALL
+            ${CMAKE_CURRENT_LIST_DIR}/test_training_speech.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/training_speech.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/training_names.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/item_names.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/speech.cpp)
+    target_include_directories(training_speech_test PRIVATE ${PROJECT_SOURCE_DIR}/src ${CMAKE_CURRENT_LIST_DIR})
+    target_compile_options(training_speech_test PRIVATE -UNDEBUG)
+    add_test(NAME training_speech COMMAND training_speech_test)
+    set_tests_properties(training_speech PROPERTIES LABELS melee)
+    add_dependencies(unit_tests training_speech_test)
+
+    # The match announcements against hand-written HUD snapshots and a fake
+    # clock, over fake voices, pickups included, and their rows in a value
+    # model; a fake bridge and its own pc_log_line.
+    add_executable(match_announcer_test EXCLUDE_FROM_ALL
+            ${CMAKE_CURRENT_LIST_DIR}/test_match_announcer.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/match_announcer.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/item_takes.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/item_names.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/match_announcement_settings.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/value_model.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/game_text.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/speech.cpp)
+    target_include_directories(match_announcer_test PRIVATE ${PROJECT_SOURCE_DIR}/src ${CMAKE_CURRENT_LIST_DIR})
+    target_compile_options(match_announcer_test PRIVATE -UNDEBUG)
+    add_test(NAME match_announcer COMMAND match_announcer_test)
+    set_tests_properties(match_announcer PROPERTIES LABELS melee)
+    add_dependencies(unit_tests match_announcer_test)
+
+    # Results speech against hand-written snapshots of the scene; a fake
+    # bridge and its own pc_log_line.
+    add_executable(results_speech_test EXCLUDE_FROM_ALL
+            ${CMAKE_CURRENT_LIST_DIR}/test_results_speech.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/results_speech.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/results_names.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/css_names.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/game_text.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/speech.cpp)
+    target_include_directories(results_speech_test PRIVATE ${PROJECT_SOURCE_DIR}/src ${CMAKE_CURRENT_LIST_DIR})
+    target_compile_options(results_speech_test PRIVATE -UNDEBUG)
+    add_test(NAME results_speech COMMAND results_speech_test)
+    set_tests_properties(results_speech PROPERTIES LABELS melee)
+    add_dependencies(unit_tests results_speech_test)
+
+    # Memory card prompt speech against the hooks' calls and a hand-written
+    # message table; a fake bridge and its own pc_log_line.
+    add_executable(memcard_speech_test EXCLUDE_FROM_ALL
+            ${CMAKE_CURRENT_LIST_DIR}/test_memcard_speech.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/memcard_speech.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/game_text.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/speech.cpp)
+    target_include_directories(memcard_speech_test PRIVATE ${PROJECT_SOURCE_DIR}/src ${CMAKE_CURRENT_LIST_DIR})
+    target_compile_options(memcard_speech_test PRIVATE -UNDEBUG)
+    add_test(NAME memcard_speech COMMAND memcard_speech_test)
+    set_tests_properties(memcard_speech PROPERTIES LABELS melee)
+    add_dependencies(unit_tests memcard_speech_test)
+
+    # Unlock notice speech against the hook's calls and a hand-written prize
+    # table, and the New challenger line against hand-written challengers; a
+    # fake bridge and its own pc_log_line.
+    add_executable(unlock_speech_test EXCLUDE_FROM_ALL
+            ${CMAKE_CURRENT_LIST_DIR}/test_unlock_speech.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/unlock_speech.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/css_names.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/game_text.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/speech.cpp)
+    target_include_directories(unlock_speech_test PRIVATE ${PROJECT_SOURCE_DIR}/src ${CMAKE_CURRENT_LIST_DIR})
+    target_compile_options(unlock_speech_test PRIVATE -UNDEBUG)
+    add_test(NAME unlock_speech COMMAND unlock_speech_test)
+    set_tests_properties(unlock_speech PROPERTIES LABELS melee)
+    add_dependencies(unit_tests unlock_speech_test)
+
+    # Character select speech against hand-written snapshots of the screen;
+    # a fake bridge and its own pc_log_line.
+    add_executable(css_speech_test EXCLUDE_FROM_ALL
+            ${CMAKE_CURRENT_LIST_DIR}/test_css_speech.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/css_speech.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/css_names.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/css_targets.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/speech.cpp)
+    target_include_directories(css_speech_test PRIVATE ${PROJECT_SOURCE_DIR}/src ${CMAKE_CURRENT_LIST_DIR})
+    target_compile_options(css_speech_test PRIVATE -UNDEBUG)
+    add_test(NAME css_speech COMMAND css_speech_test)
+    set_tests_properties(css_speech PROPERTIES LABELS melee)
+    add_dependencies(unit_tests css_speech_test)
+
+    # Stage select speech against hand-written snapshots of the screen; a fake
+    # bridge and its own pc_log_line.
+    add_executable(sss_speech_test EXCLUDE_FROM_ALL
+            ${CMAKE_CURRENT_LIST_DIR}/test_sss_speech.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/sss_speech.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/sss_names.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/speech.cpp)
+    target_include_directories(sss_speech_test PRIVATE ${PROJECT_SOURCE_DIR}/src ${CMAKE_CURRENT_LIST_DIR})
+    target_compile_options(sss_speech_test PRIVATE -UNDEBUG)
+    add_test(NAME sss_speech COMMAND sss_speech_test)
+    set_tests_properties(sss_speech PROPERTIES LABELS melee)
+    add_dependencies(unit_tests sss_speech_test)
+
+    # Lobby speech against hand-written snapshots of the lobby's view; a fake
+    # bridge and its own pc_log_line.
+    add_executable(lobby_speech_test EXCLUDE_FROM_ALL
+            ${CMAKE_CURRENT_LIST_DIR}/test_lobby_speech.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/lobby_speech.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/speech.cpp)
+    target_include_directories(lobby_speech_test PRIVATE ${PROJECT_SOURCE_DIR}/src ${CMAKE_CURRENT_LIST_DIR})
+    target_compile_options(lobby_speech_test PRIVATE -UNDEBUG)
+    add_test(NAME lobby_speech COMMAND lobby_speech_test)
+    set_tests_properties(lobby_speech PROPERTIES LABELS melee)
+    add_dependencies(unit_tests lobby_speech_test)
+
+    # Direct Connect's speech against hand-written snapshots of the hub, the
+    # code keyboard and the call; a fake bridge and its own pc_log_line.
+    add_executable(direct_speech_test EXCLUDE_FROM_ALL
+            ${CMAKE_CURRENT_LIST_DIR}/test_direct_speech.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/direct_speech.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/wait_status.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/speech.cpp)
+    target_include_directories(direct_speech_test PRIVATE ${PROJECT_SOURCE_DIR}/src ${CMAKE_CURRENT_LIST_DIR})
+    target_compile_options(direct_speech_test PRIVATE -UNDEBUG)
+    add_test(NAME direct_speech COMMAND direct_speech_test)
+    set_tests_properties(direct_speech PROPERTIES LABELS melee)
+    add_dependencies(unit_tests direct_speech_test)
+
+    # The glide against simulated cursors that move as the game's do.
+    add_executable(steering_test EXCLUDE_FROM_ALL
+            ${CMAKE_CURRENT_LIST_DIR}/test_steering.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/steering.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/css_targets.cpp)
+    target_include_directories(steering_test PRIVATE ${CMAKE_CURRENT_LIST_DIR})
+    target_compile_options(steering_test PRIVATE -UNDEBUG)
+    add_test(NAME steering COMMAND steering_test)
+    set_tests_properties(steering PROPERTIES LABELS melee)
+    add_dependencies(unit_tests steering_test)
+
+    # The shared steps over rows of plain targets.
+    add_executable(steps_test EXCLUDE_FROM_ALL
+            ${CMAKE_CURRENT_LIST_DIR}/test_steps.cpp)
+    target_include_directories(steps_test PRIVATE ${CMAKE_CURRENT_LIST_DIR})
+    target_compile_options(steps_test PRIVATE -UNDEBUG)
+    add_test(NAME steps COMMAND steps_test)
+    set_tests_properties(steps PROPERTIES LABELS melee)
+    add_dependencies(unit_tests steps_test)
+
+    # Stage select's targets against hand-written snapshots.
+    add_executable(sss_targets_test EXCLUDE_FROM_ALL
+            ${CMAKE_CURRENT_LIST_DIR}/test_sss_targets.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/sss_targets.cpp)
+    target_include_directories(sss_targets_test PRIVATE ${CMAKE_CURRENT_LIST_DIR})
+    target_compile_options(sss_targets_test PRIVATE -UNDEBUG)
+    add_test(NAME sss_targets COMMAND sss_targets_test)
+    set_tests_properties(sss_targets PROPERTIES LABELS melee)
+    add_dependencies(unit_tests sss_targets_test)
+
+    # Character select's targets against hand-written snapshots.
+    add_executable(css_targets_test EXCLUDE_FROM_ALL
+            ${CMAKE_CURRENT_LIST_DIR}/test_css_targets.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/css_targets.cpp)
+    target_include_directories(css_targets_test PRIVATE ${CMAKE_CURRENT_LIST_DIR})
+    target_compile_options(css_targets_test PRIVATE -UNDEBUG)
+    add_test(NAME css_targets COMMAND css_targets_test)
+    set_tests_properties(css_targets PROPERTIES LABELS melee)
+    add_dependencies(unit_tests css_targets_test)
+
+    # The game text decoder against hand-written byte code.
+    add_executable(game_text_test EXCLUDE_FROM_ALL
+            ${CMAKE_CURRENT_LIST_DIR}/test_game_text.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/game_text.cpp)
+    target_include_directories(game_text_test PRIVATE ${CMAKE_CURRENT_LIST_DIR})
+    target_compile_options(game_text_test PRIVATE -UNDEBUG)
+    add_test(NAME game_text COMMAND game_text_test)
+    set_tests_properties(game_text PROPERTIES LABELS melee)
+    add_dependencies(unit_tests game_text_test)
+
+    # The cue engine rendered into buffers, with no device; its own
+    # pc_log_line. It also writes a dump of a known pulse train, which the
+    # dump analysis script must then read back correctly.
+    add_executable(cue_engine_test EXCLUDE_FROM_ALL
+            ${CMAKE_CURRENT_LIST_DIR}/test_cue_engine.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/cue_engine.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/cue_sounds.cpp)
+    target_include_directories(cue_engine_test PRIVATE ${PROJECT_SOURCE_DIR}/src ${CMAKE_CURRENT_LIST_DIR})
+    target_link_libraries(cue_engine_test PRIVATE a11y_miniaudio a11y_pitch_shift)
+    target_compile_options(cue_engine_test PRIVATE -UNDEBUG)
+    add_test(NAME cue_engine COMMAND cue_engine_test ${CMAKE_BINARY_DIR}/cue_pulse_train.f32)
+    set_tests_properties(cue_engine PROPERTIES LABELS melee FIXTURES_SETUP cue_dump)
+    add_dependencies(unit_tests cue_engine_test)
+    if (MELEE_PYTHON)
+        add_test(NAME cue_dump_analysis COMMAND ${MELEE_PYTHON}
+                ${PROJECT_SOURCE_DIR}/tools/a11y/test_cue_dump.py ${CMAKE_BINARY_DIR}/cue_pulse_train.f32)
+        set_tests_properties(cue_dump_analysis PROPERTIES LABELS melee FIXTURES_REQUIRED cue_dump)
+        # The save tool's card cipher and edits, on a hand-made save file.
+        add_test(NAME make_save COMMAND ${MELEE_PYTHON} ${PROJECT_SOURCE_DIR}/tools/a11y/test_make_save.py)
+        set_tests_properties(make_save PROPERTIES LABELS melee)
+        # The zip documents' pandoc commands and refusals, pandoc faked.
+        add_test(NAME make_documents COMMAND ${MELEE_PYTHON} ${PROJECT_SOURCE_DIR}/tools/a11y/test_make_documents.py)
+        set_tests_properties(make_documents PROPERTIES LABELS melee)
+        # The tag build's checks and release notes, git and gh faked.
+        add_test(NAME release_notes COMMAND ${MELEE_PYTHON} ${PROJECT_SOURCE_DIR}/tools/a11y/test_release_notes.py)
+        set_tests_properties(release_notes PROPERTIES LABELS melee)
+    endif ()
+
+    # The accessibility settings: the value model, its file against files in
+    # a scratch folder, the menus' rows, the cues' values feeding the cue
+    # engine rendered into a buffer, and choices; a fake bridge and its own
+    # pc_log_line.
+    add_executable(accessibility_settings_test EXCLUDE_FROM_ALL
+            ${CMAKE_CURRENT_LIST_DIR}/test_accessibility_settings.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/accessibility_settings.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/value_model.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/value_file.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/cue_settings.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/cue_engine.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/speech.cpp)
+    target_include_directories(accessibility_settings_test PRIVATE ${PROJECT_SOURCE_DIR}/src ${CMAKE_CURRENT_LIST_DIR})
+    target_compile_options(accessibility_settings_test PRIVATE -UNDEBUG)
+    add_test(NAME accessibility_settings COMMAND accessibility_settings_test ${CMAKE_BINARY_DIR}/accessibility_settings_files)
+    set_tests_properties(accessibility_settings PROPERTIES LABELS melee)
+    add_dependencies(unit_tests accessibility_settings_test)
+
+    # The switches wired as the game wires them, over the accessibility
+    # settings' file in a scratch folder, and a glide they end; a fake bridge
+    # and its own pc_log_line.
+    add_executable(switches_test EXCLUDE_FROM_ALL
+            ${CMAKE_CURRENT_LIST_DIR}/test_switches.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/switches.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/accessibility_settings.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/value_model.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/value_file.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/cue_settings.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/cue_engine.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/steerer.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/steering.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/speech.cpp)
+    target_include_directories(switches_test PRIVATE ${PROJECT_SOURCE_DIR}/src ${CMAKE_CURRENT_LIST_DIR})
+    target_compile_options(switches_test PRIVATE -UNDEBUG)
+    add_test(NAME switches COMMAND switches_test ${CMAKE_BINARY_DIR}/switches_files)
+    set_tests_properties(switches PROPERTIES LABELS melee)
+    add_dependencies(unit_tests switches_test)
+
+    # The position cues' driver against hand-written match snapshots.
+    add_executable(position_cue_test EXCLUDE_FROM_ALL
+            ${CMAKE_CURRENT_LIST_DIR}/test_position_cue.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/position_cue.cpp)
+    target_include_directories(position_cue_test PRIVATE ${CMAKE_CURRENT_LIST_DIR})
+    target_compile_options(position_cue_test PRIVATE -UNDEBUG)
+    add_test(NAME position_cue COMMAND position_cue_test)
+    set_tests_properties(position_cue PROPERTIES LABELS melee)
+    add_dependencies(unit_tests position_cue_test)
+
+    # The gap warning's driver against hand-written match snapshots.
+    add_executable(gap_warning_test EXCLUDE_FROM_ALL
+            ${CMAKE_CURRENT_LIST_DIR}/test_gap_warning.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/gap_warning.cpp)
+    target_include_directories(gap_warning_test PRIVATE ${CMAKE_CURRENT_LIST_DIR})
+    target_compile_options(gap_warning_test PRIVATE -UNDEBUG)
+    add_test(NAME gap_warning COMMAND gap_warning_test)
+    set_tests_properties(gap_warning PROPERTIES LABELS melee)
+    add_dependencies(unit_tests gap_warning_test)
+
+    # The ledge warning's driver against hand-written match snapshots.
+    add_executable(ledge_warning_test EXCLUDE_FROM_ALL
+            ${CMAKE_CURRENT_LIST_DIR}/test_ledge_warning.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/ledge_warning.cpp)
+    target_include_directories(ledge_warning_test PRIVATE ${CMAKE_CURRENT_LIST_DIR})
+    target_compile_options(ledge_warning_test PRIVATE -UNDEBUG)
+    add_test(NAME ledge_warning COMMAND ledge_warning_test)
+    set_tests_properties(ledge_warning PROPERTIES LABELS melee)
+    add_dependencies(unit_tests ledge_warning_test)
+
+    # Items appearing against hand-written match snapshots: new items, the
+    # announcement over a fake bridge, the appearance cue's driver, the item
+    # cues' frame and the preview's moments; its own pc_log_line.
+    add_executable(item_appearance_test EXCLUDE_FROM_ALL
+            ${CMAKE_CURRENT_LIST_DIR}/test_item_appearance.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/item_appearance.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/item_frame.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/position_cue.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/item_names.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/speech.cpp)
+    target_include_directories(item_appearance_test PRIVATE ${PROJECT_SOURCE_DIR}/src ${CMAKE_CURRENT_LIST_DIR})
+    target_compile_options(item_appearance_test PRIVATE -UNDEBUG)
+    add_test(NAME item_appearance COMMAND item_appearance_test)
+    set_tests_properties(item_appearance PROPERTIES LABELS melee)
+    add_dependencies(unit_tests item_appearance_test)
+
+    # The item's position cue's driver against hand-written match snapshots:
+    # the item followed, its paces, both frames with the crossing margin, its
+    # silences and the preview's moments.
+    add_executable(item_position_test EXCLUDE_FROM_ALL
+            ${CMAKE_CURRENT_LIST_DIR}/test_item_position.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/item_position.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/item_frame.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/position_cue.cpp)
+    target_include_directories(item_position_test PRIVATE ${PROJECT_SOURCE_DIR}/src ${CMAKE_CURRENT_LIST_DIR})
+    target_compile_options(item_position_test PRIVATE -UNDEBUG)
+    add_test(NAME item_position COMMAND item_position_test)
+    set_tests_properties(item_position PROPERTIES LABELS melee)
+    add_dependencies(unit_tests item_position_test)
+
+    # The match cues against hand-written match snapshots, their voices
+    # rendered into buffers with no device, and the menus' rows with the
+    # switches first; its own pc_log_line.
+    add_executable(match_cues_test EXCLUDE_FROM_ALL
+            ${CMAKE_CURRENT_LIST_DIR}/test_match_cues.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/match_cues.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/position_cue.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/item_frame.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/item_appearance.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/item_position.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/item_names.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/gap_warning.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/ledge_warning.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/cue_settings.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/value_model.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/cue_engine.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/cue_sounds.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/switches.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/accessibility_settings.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/value_file.cpp
+            ${CMAKE_CURRENT_LIST_DIR}/speech.cpp)
+    target_include_directories(match_cues_test PRIVATE ${PROJECT_SOURCE_DIR}/src ${CMAKE_CURRENT_LIST_DIR})
+    target_link_libraries(match_cues_test PRIVATE a11y_miniaudio a11y_pitch_shift)
+    target_compile_options(match_cues_test PRIVATE -UNDEBUG)
+    add_test(NAME match_cues COMMAND match_cues_test)
+    set_tests_properties(match_cues PROPERTIES LABELS melee)
+    add_dependencies(unit_tests match_cues_test)
+endif ()

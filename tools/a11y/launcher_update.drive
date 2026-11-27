@@ -1,0 +1,42 @@
+# The launcher's update check finding a newer Non-Visual Melee release in a
+# canned release list: the update banner at start with the release's version,
+# title and description, its buttons, and Settings' Updates row, before and
+# after Check now. Run in launcher mode, with accessibility on but muted and
+# the canned list read in place of GitHub's (as run_level.py runs it):
+#   python tools/a11y/drive.py --launcher --muted --update-list tools/a11y/update_lists/newer.json tools/a11y/launcher_update.drive
+# newer.json holds ci-latest, a draft, a release without the Windows zip,
+# a11y-v99.0.0 with it, a11y-v0.0.0 and two base port releases, so the
+# offer is 99.0.0 whatever src/pc/a11y/FORK_VERSION holds. drive.py refuses
+# to press the banner's Open release page and View Release, which open the
+# browser.
+
+# The banner comes up beside the opening, its version first.
+wait '"Melee launcher\. Ready to play'
+wait '"Update available: 99\.0\.0"$'
+wait '"Non-Visual Melee 99\.0\.0 beta"$'
+wait '"A newer version of Non-Visual Melee is available \(99\.0\.0\)\. Download and extract the Windows ZIP from the release page\."$'
+
+# Its buttons come before Play.
+key Up
+wait '"Later, button\. Hide this until the next start\."$'
+key Up
+wait '"View Release, button\. '
+key Up
+wait '"Open release page, button\. '
+key Down Down Down
+wait '"Play, button\. '
+
+# Settings' Updates row says the offer, and Check now reads the list again.
+key Down Down Down
+wait '"Settings, button\. '
+key Return
+wait '"Settings\. Graphics\. '
+key Up Up
+wait '"Launcher\. '
+key Right
+wait '"Interface size, '
+key Down Down
+wait '"Updates: Check now, button\. Update available: Non-Visual Melee 99\.0\.0\. Look for a new release now\."$'
+key Return
+wait '"Checking for updates\.\.\."$'
+wait '"Update available: Non-Visual Melee 99\.0\.0"$'

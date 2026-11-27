@@ -15,6 +15,16 @@
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
     <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
 
+    <!-- Android 11 and later hide installed text-to-speech engines from an
+         app that does not ask for them, and TextToSpeech then binds to no
+         engine at all. The Non-Visual Melee speech (src/pc/a11y/
+         android_tts.cpp) is silent on such a phone without this. -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.TTS_SERVICE" />
+        </intent>
+    </queries>
+
     <application
         android:allowBackup="true"
         android:hardwareAccelerated="true"

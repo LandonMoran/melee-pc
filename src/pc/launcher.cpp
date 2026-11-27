@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "launcher.h"
+#include "a11y/a11y_hooks.h"
 #include "textures.h"
 #include "widescreen.h"
 #include "launcher_data.hpp"
@@ -162,7 +163,9 @@ int backend_next(int mode, int direction = 1) {
 }
 
 constexpr const char* tab_ids[] = {
-    "tab-graphics", "tab-audio", "tab-cheats", "tab-controls", "tab-online", "tab-launcher"};
+    "tab-graphics", "tab-audio", "tab-cheats", "tab-controls", "tab-online",
+    "tab-accessibility", /* a11y: the fork's category, before Launcher */
+    "tab-launcher"};
 
 template <size_t N>
 int index_of(const char* const (&ids)[N], const Rml::String& id) {
@@ -327,7 +330,9 @@ class Launcher final : public Rml::EventListener {
             return {"unlock-all", "frozen-stadium", "free-camera", "ucf"};
         case 4:
             return {"net-name", "net-target", "net-delay"};
-        case 5:
+        case 5:                              // a11y: Accessibility, the fork's rows
+            return pc_a11y_settings_rows();  // a11y
+        case 6:                              // a11y: Launcher, after Accessibility
             return {"scale", "check-updates", "check-now", "settings-discord", "export-logs"};
         default:
             return {};
@@ -469,9 +474,14 @@ class Launcher final : public Rml::EventListener {
                 return;
             }
         }
+        pc_a11y_launcher_enter_text();
     }
     // B or Escape: rows to categories, categories to the main menu.
     void back() {
+        if (pc_a11y_settings_back(document))  // a11y: out of a submenu of the fork's rows
+            return;
+        if (pc_a11y_launcher_back())
+            return;
         if (!settings) {
             if (verification.valid())
                 cancel = true;
@@ -481,6 +491,8 @@ class Launcher final : public Rml::EventListener {
             show_settings(false);
     }
     void focus_step(int direction) {
+        if (pc_a11y_launcher_step(direction))
+            return;
         auto* focus = document->GetContext()->GetFocusElement();
         const auto ids = column();
         const int count = static_cast<int>(ids.size());
@@ -512,10 +524,14 @@ class Launcher final : public Rml::EventListener {
     /* Left and Right: Melee's arrows. They step a value either way, move a
      * slider, or cross between the categories and the rows. */
     void horizontal(int direction) {
+        if (direction < 0 && pc_a11y_launcher_back())
+            return;
         auto* focus = document->GetContext()->GetFocusElement();
         if (!focus || focus->IsPseudoClassSet("disabled"))
             return;
         const auto id = focus->GetId();
+        if (pc_a11y_settings_step(document, id, direction))  // a11y: the fork's rows
+            return;
         if (settings && index_of(tab_ids, id) >= 0) {
             if (direction > 0)
                 enter_rows();
@@ -557,6 +573,8 @@ class Launcher final : public Rml::EventListener {
             e->SetAttribute("value", value);
     }
     static bool is_slider(const Rml::String& id) {
+        if (pc_a11y_settings_slider(id))  // a11y: the fork's sliders
+            return true;
         return id == "volume" || id == "resolution" || id == "scale" || id == "music-volume" ||
                id == "sfx-volume";
     }
@@ -601,13 +619,13 @@ class Launcher final : public Rml::EventListener {
         text("check-updates", prefs.check_updates ? "On" : "Off");
         auto ustate = pc::updater::get_state();
         if (ustate.status == pc::updater::Status::UpdateAvailable) {
-            text("check-status", "Update available: " + ustate.latest_release.tag_name);
+            text("check-status", pc_a11y_update_available(ustate));  // a11y
         } else if (ustate.status == pc::updater::Status::Checking) {
             text("check-status", "Checking for updates...");
         } else if (ustate.status == pc::updater::Status::Failed) {
             text("check-status", ustate.message);
         } else {
-            text("check-status", "Melee-PC is up to date (" + pc::get_app_version() + ").");
+            text("check-status", pc_a11y_update_up_to_date());  // a11y
         }
         notice();
         quiet = false;
@@ -688,6 +706,8 @@ class Launcher final : public Rml::EventListener {
         controls();
     }
     void action(const std::string& id, int direction = 1) {
+        if (pc_a11y_settings_press(document, id))  // a11y: the fork's rows
+            return;
         if (id == "export-logs") {
             pc_android_export_logs();
             return;
@@ -932,8 +952,8 @@ public:
         document->SetClass("android", true);
 #endif
         document->Show();
-        text("app-version", pc::get_app_version());
-        text("check-status", "Current version: " + pc::get_app_version());
+        text("app-version", pc_a11y_shown_version());
+        text("check-status", "Current version: " + pc_a11y_shown_version());
         text("disc-note", disc_note);
         if (prefs.check_updates) {
             pc::updater::check_for_updates_async(true);
@@ -973,6 +993,8 @@ public:
                 target = target->GetParentNode();
             }
         } else if (event.GetId() == Rml::EventId::Change) {
+            if (pc_a11y_settings_change(event))  // a11y: the fork's sliders
+                return;
             auto* target = event.GetTargetElement();
             if (!target || quiet)
                 return;
@@ -1112,6 +1134,9 @@ public:
                 auto info = inspection.get();
                 if (info.supported) {
                     prefs.disc = pending_path;
+                    /* Android: the picker's grant lasts for this session, and
+                     * the path outlives it in launcher.cfg. */
+                    pc_android_take_persistable_uri(prefs.disc.c_str());
                     supported = true;
                     selected_identity = identity(prefs.disc);
                     std::string display_name;
@@ -1274,6 +1299,7 @@ public:
                 break;
             if (aurora_begin_frame())
                 aurora_end_frame();
+            pc_a11y_launcher_frame();
             /* Spend the idle time until the next frame on the pipeline queue:
              * with worker threads this only waits, as a plain delay did;
              * without them (Android) it builds queued pipelines here, the only
@@ -1394,6 +1420,13 @@ static std::filesystem::path pc_resources_path() {
 #endif
 }
 
+/* The image launcher.cfg remembers, for Android's startup disc menu
+ * (src/pc/main.c): it offers a returning player a one-tap Start instead of
+ * sending them into a launcher a screen reader cannot read. */
+extern "C" const char* pc_launcher_saved_disc(void) {
+    return prefs.disc.c_str();
+}
+
 extern "C" int pc_launcher_run(const char* command_line_disc, SDL_Window* window) {
     try {
         std::string error;
@@ -1481,6 +1514,8 @@ public:
         return index_of(tab_ids, id) >= 0 || id == "resume" || id == "quit-game";
     }
     static bool is_slider(const Rml::String& id) {
+        if (pc_a11y_settings_slider(id))  // a11y: the fork's sliders
+            return true;
         return id == "volume" || id == "resolution" || id == "scale" || id == "music-volume" ||
                id == "sfx-volume";
     }
@@ -1508,6 +1543,8 @@ public:
             return {"unlock-all", "frozen-stadium", "free-camera", "ucf"};
         case 4:
             return {"net-name", "net-target", "net-delay"};
+        case 5:                              // a11y: Accessibility, the fork's rows
+            return pc_a11y_settings_rows();  // a11y
         default: {
             std::vector<std::string> ids{"pad-port"};
             for (int i = 0; i < PAD_BUTTON_COUNT; ++i)
@@ -1555,6 +1592,8 @@ public:
         }
     }
     void back() {
+        if (pc_a11y_settings_back(document))  // a11y: out of a submenu of the fork's rows
+            return;
         auto* focus = document->GetContext()->GetFocusElement();
         if (focus && !is_sidebar(focus->GetId()))
             show_tab(tab);
@@ -1562,6 +1601,8 @@ public:
             toggle();
     }
     void focus_step(int direction) {
+        if (pc_a11y_port_menu_step(direction))
+            return;
         auto* focus = document->GetContext()->GetFocusElement();
         const auto id = focus ? focus->GetId() : Rml::String();
         if (is_sidebar(id)) {
@@ -1721,16 +1762,16 @@ public:
         label("fps", prefs.fps ? "On" : "Off");
         slider("scale", prefs.scale * 100.0f);
         label("scale-val", std::to_string(int(prefs.scale * 100 + 0.5f)) + "%");
-        label("menu-version", pc::get_app_version());
+        label("menu-version", pc_a11y_shown_version());
         auto ustate = pc::updater::get_state();
         if (ustate.status == pc::updater::Status::UpdateAvailable) {
-            label("port-update-status", "Update available: " + ustate.latest_release.tag_name);
+            label("port-update-status", pc_a11y_update_available(ustate));
         } else if (ustate.status == pc::updater::Status::Checking) {
             label("port-update-status", "Checking for updates...");
         } else if (ustate.status == pc::updater::Status::Failed) {
             label("port-update-status", "Check failed");
         } else {
-            label("port-update-status", "Up to date (" + pc::get_app_version() + ")");
+            label("port-update-status", pc_a11y_update_up_to_date());
         }
         refresh_bindings();
         quiet = false;
@@ -1880,6 +1921,8 @@ public:
         refresh_bindings();
     }
     void apply(const Rml::String& id, int direction = 1) {
+        if (pc_a11y_settings_press(document, id))  // a11y: the fork's rows
+            return;
         if (id == "net-delay") {
             prefs.net_delay = (prefs.net_delay + 1 + direction + 6) % 6 - 1;
             saved();
@@ -2048,6 +2091,8 @@ public:
         if (!focus)
             return;
         const auto id = focus->GetId();
+        if (pc_a11y_settings_step(document, id, direction))  // a11y: the fork's rows
+            return;
         if (index_of(tab_ids, id) >= 0) {
             if (direction > 0)
                 enter_rows();
@@ -2235,6 +2280,8 @@ public:
             return;
         }
         if (event.GetId() == Rml::EventId::Change) {
+            if (pc_a11y_settings_change(event))  // a11y: the fork's sliders
+                return;
             auto* target = event.GetTargetElement();
             if (target && !quiet && change_online(event)) {
                 saved();
@@ -2317,6 +2364,7 @@ extern "C" void pc_menu_update(void) {
             port_menu.counter->Hide();
     }
     port_menu.poll_binding();
+    pc_a11y_port_menu_frame(port_menu.open);
 }
 
 extern "C" bool pc_is_custom_textures_enabled(void) {

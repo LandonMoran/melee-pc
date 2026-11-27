@@ -50,6 +50,42 @@ Use NDK **26.3.11579264**, matching CI; select it with `ANDROID_NDK_HOME`.
    adb install -r dist/Melee-Android-arm64.apk
    ```
 
+## Accessibility
+
+The build carries the Non-Visual Melee accessibility layer (src/pc/a11y), which
+makes the game playable without sight: the launcher, the game's menus and the
+results are read aloud, two voices announce damage, stocks and pickups, and
+audio cues say where you and your opponent are.
+
+Speech is the phone's own `TextToSpeech` engine, reached over JNI
+(`android_tts.cpp` and `MeleeSpeech.java`); Prism, the screen reader library the
+Windows and macOS builds link, ships no Android build. The two match voices are
+the same engine rendered to memory and played by the game's cue engine. The
+cue sounds are unpacked from the APK into the app's files directory on first
+launch (`MeleeActivity.getA11ySoundsDir`).
+
+A gamepad is required to play with speech: the on-screen overlay is drawn for
+sighted players. [ACCESSIBILITY.md](../../ACCESSIBILITY.md#android) has the
+player-facing guide.
+
+## Choosing the disc with a screen reader
+
+The launcher is an RmlUi page drawn on the SDL surface, so Android's screen
+reader cannot read it and only a sighted tap can move its focus. Before the
+launcher runs, Android therefore shows a small native dialog instead — read by
+TalkBack like any other Android menu — with **Start**, **Choose disc image** and
+**Launcher**:
+
+- **Choose disc image** opens Android's own document picker; pick your image
+  and the dialog says which one it took. The grant is persisted, so the next
+  launch offers the same image again.
+- **Start** boots that image straight in, skipping the launcher. From then on
+  the fork's own speech reads the game and the F1 menu, as on every platform.
+- **Launcher** opens the desktop launcher for anyone who wants it (graphics,
+  verification, updates).
+
+So disc choice needs no sight at all: one dialog, one picker, then speech.
+
 ## Performance settings
 
 Use **Settings > Graphics > Performance preset > Apply** for 1x rendering,

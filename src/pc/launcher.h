@@ -7,6 +7,10 @@ extern "C" {
 void pc_launcher_configure(AuroraConfig* config);
 /* 1: disc opened, 0: user quit, -1: launcher initialization failed. */
 int pc_launcher_run(const char* command_line_disc, SDL_Window* window);
+/* The image launcher.cfg remembers, empty when it remembers none. Android's
+ * startup disc menu (src/pc/android_hooks.h) offers it as a one-tap Start, so
+ * it has to be read before pc_launcher_run. */
+const char* pc_launcher_saved_disc(void);
 void pc_menu_init(SDL_Window* window);
 void pc_menu_update(void);
 void pc_menu_toggle(void);

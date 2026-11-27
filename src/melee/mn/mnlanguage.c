@@ -33,6 +33,7 @@ void mnLanguage_8024BFE0(HSD_GObj* unused)
     u8 lang;
     {
         Menu* user_data = HSD_GObjGetUserData(mn_gobj);
+        pc_a11y_language_frame(user_data->cursor);
         if (mn_804D6BC8.cooldown != 0) {
             mn_804D6BC8.cooldown -= 1;
             mn_804D6BC8.x2 = 0;

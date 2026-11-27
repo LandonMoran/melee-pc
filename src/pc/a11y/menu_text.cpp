@@ -1,0 +1,78 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
+#include "menu_text.hpp"
+#include "game_access.h"
+#include "game_text.hpp"
+#include "pc/pc.h"
+#include "pc/region.h"
+#include "speech.hpp"
+#include <cstdlib>
+#include <cstring>
+#include <set>
+#include <string>
+
+namespace a11y {
+namespace {
+
+/* Far past the few hundred strings of any table, in case a table's end is
+ * not followed by a word that resolves nowhere. */
+constexpr int k_max_strings = 4096;
+
+/* The symbols of the tables dumped so far. */
+std::set<std::string> s_dumped;
+
+/* No font glyphs: a dump shows each table's own as their codes, which is
+ * how the readers' tables of them are found. */
+GameTextSource game_source() {
+    GameTextSource source;
+    source.pal = pc_region_pal;
+    source.resolve = a11y_game_resolve;
+    return source;
+}
+
+/* One log line per string. */
+std::string dump_line(const DecodedText& decoded) {
+    std::string line = one_line(decoded.text);
+    if (decoded.malformed) {
+        line += " {malformed}";
+    }
+    return line;
+}
+
+void dump_table(int font) {
+    const char* symbol = a11y_game_font_symbol(font);
+    GameTextSource source = game_source();
+    int count = 0;
+    int unknown = 0;
+    int malformed = 0;
+    for (; count < k_max_strings; count++) {
+        const std::uint8_t* entry = a11y_game_string(font, count);
+        if (entry == nullptr) {
+            break;
+        }
+        DecodedText decoded = decode_game_text(entry, source);
+        unknown += decoded.unknown_glyphs;
+        malformed += decoded.malformed ? 1 : 0;
+        pc_log_line("[a11y] game text %s %d: \"%s\"", symbol, count, dump_line(decoded).c_str());
+    }
+    pc_log_line("[a11y] game text %s: %d strings, %d unknown glyphs, %d malformed", symbol, count,
+        unknown, malformed);
+}
+
+}  // namespace
+
+void menu_text_dump_once(int font) {
+    static const bool wanted = [] {
+        const char* dump = std::getenv("MELEE_A11Y_TEXT_DUMP");
+        return dump != nullptr && std::strcmp(dump, "0") != 0;
+    }();
+    if (!wanted || !log_enabled()) {
+        return;
+    }
+    const char* symbol = a11y_game_font_symbol(font);
+    if (symbol == nullptr || !s_dumped.insert(symbol).second) {
+        return;
+    }
+    dump_table(font);
+}
+
+}  // namespace a11y

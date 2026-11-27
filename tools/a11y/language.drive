@@ -1,0 +1,69 @@
+# Opens Language from Options, moves both ways, switches the game to Japanese
+# and waits for the change line after the menu reloads, opens Language again
+# in Japanese, switches back to English and waits again, then goes back to
+# Options with B. A on the language in use first, which does nothing. The
+# switch reaches the save only in memory: run with no card, the default:
+#   python tools/a11y/drive.py tools/a11y/language.drive
+# run_level.py counts the lines that open with Options' Language entry: one,
+# the return by B, so A on the language in use reloading the menu fails it.
+
+# Title screen to the main menu (tools/a11y/main_menu.drive).
+wait "state 0 scene 0$"
+press Start until "boot scene: game mode"
+press A until "boot scene: state 0 scene 1$" 20 0.3
+wait '"Main Menu\. 1-P Mode\. '
+# The menu ignores input for its first 20 frames.
+sleep 1
+
+# Options, then Language.
+press Down
+wait '"VS\. Mode\. '
+press Down
+wait '"Trophies\. '
+press Down
+wait '"Options\. '
+press A
+wait '"Options\. Rumble\. '
+sleep 0.3
+press Up
+wait '"Erase Data\. '
+press Up
+wait '"Language\. Select language display\."'
+
+# The opening, on English, the language in use. Left and Right are ignored
+# until the screen has slid in.
+press A
+wait '"Language\. English\. Left and right to choose\. Choose a language and press the A Button to confirm\."'
+sleep 1
+press A
+sleep 0.5
+press Left
+wait '"Japanese\. The game.s own text will be in Japanese\."'
+press Right
+wait '"English"$'
+press Left
+wait '"Japanese\. The game.s own text will be in Japanese\."'
+
+# A on Japanese reloads the menu on Options, Language hovered, its
+# description now the Japanese table's, said as far as it decodes.
+press A
+wait '"Language changed to Japanese\. Options\. Language\.'
+sleep 1
+
+# Language in Japanese: no warning on Japanese, the language in use. Back to
+# English.
+press A
+wait '"Language\. Japanese\. Left and right to choose\.'
+sleep 1
+press Right
+wait '"English"$'
+press A
+wait '"Language changed to English\. Options\. Language\. Select language display\."'
+sleep 1
+
+# Language again, and B back to Options.
+press A
+wait '"Language\. English\. Left and right to choose\. '
+sleep 1
+press B
+wait '"Options\. Language\. Select language display\."'

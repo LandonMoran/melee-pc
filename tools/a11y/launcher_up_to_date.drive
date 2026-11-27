@@ -1,0 +1,49 @@
+# The launcher's update check finding no Non-Visual Melee release newer than
+# this build in a canned release list: no banner at start, Settings' Updates
+# row saying the build is up to date with its fork version, Check now saying
+# it again, and the port menu's Check for updates row the same. Run in
+# launcher mode, with accessibility on but muted and the canned list read in
+# place of GitHub's (as run_level.py runs it, which also checks that no
+# "Update available" is ever said):
+#   python tools/a11y/drive.py --launcher --muted --update-list tools/a11y/update_lists/base_only.json tools/a11y/launcher_up_to_date.drive
+# base_only.json holds ci-latest and two base port releases, none of them a
+# fork release. The version is matched as any, since it is
+# src/pc/a11y/FORK_VERSION's.
+
+wait '"Melee launcher\. Ready to play, Disc not verified\. Play, button\. '
+
+# Settings' Updates row, then Check now.
+key Down Down Down
+wait '"Settings, button\. '
+key Return
+wait '"Settings\. Graphics\. '
+key Up Up
+wait '"Launcher\. '
+key Right
+wait '"Interface size, '
+key Down Down
+wait '"Updates: Check now, button\. Non-Visual Melee is up to date \(\d+\.\d+\.\d+\)\. Look for a new release now\."$'
+key Return
+wait '"Checking for updates\.\.\."$'
+wait '"Non-Visual Melee is up to date \(\d+\.\d+\.\d+\)\."$'
+
+# Back to Home and into the game, where the port menu's row says the same.
+key Escape
+wait '"Launcher\. '
+key Escape
+wait '"Settings, button\. '
+key Up Up Up
+wait '"Play, button\. '
+key Return
+wait "boot scene: state 0 scene 0$" 120
+wait '"Title screen\. Press Start\."$'
+key F1
+wait '"PC settings\. Graphics\. '
+key Down
+wait '"Audio"$'
+key Right
+wait '"Master volume, '
+key Down Down Down Down Down Down Down
+wait '"Check for updates: Check now, button\. Non-Visual Melee is up to date \(\d+\.\d+\.\d+\)\."$'
+key F1
+wait '"Back to game"$'

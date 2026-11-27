@@ -23,6 +23,7 @@
 #include "mnsound.h"
 #include "mnsoundtest.h"
 #include "mnvibration.h"
+#include "pc/a11y/a11y_hooks.h"
 #include "types.h"
 #include <dolphin/pad.h>
 #include <melee/gm/gm_unsplit.h>
@@ -2870,6 +2871,7 @@ void mn_8022DB10(HSD_GObj* gp)
 void mnMain_Scene_OnFrame(void)
 {
     MenuExitData* data;
+    pc_a11y_menu_frame(); /* runs before the menu's objects update this frame */
     if (mn_8022F218() && mn_804A04F0.cur_menu != MENU_KIND_MAIN) {
         lbAudioAx_80023694();
         sfxBack();
